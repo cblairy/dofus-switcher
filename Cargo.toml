@@ -1,0 +1,13 @@
+[package]
+name = "dofus-switcher"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+dirs = "7.0.0"
+image = "0.25.10"
+img_hash = "3.2.0"
+ocrs = "0.13.1"
+rten = "0.26.0"
+x11rb = "0.14.0"
