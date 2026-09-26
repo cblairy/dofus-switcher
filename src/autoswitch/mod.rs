@@ -28,17 +28,23 @@ pub(crate) fn auto_switch(
         match dofus_windows.refresh(conn) {
             Ok(Some(active_window)) => {
                 report_error_recovered(&mut last_ocr_error, &events_tx);
-                if let Err(error) = process_capture(conn, active_window, x, y, w, h, &engine) {
-                    if is_window_closed_error(&error) {
-                        eprintln!(
-                            "[autoswitch] Active window (0x{active_window:x}) is closed or unavailable."
-                        );
-                    } else {
-                        report_worker_error(
-                            &mut last_ocr_error,
-                            format!("OCR cycle failed: {error:#}"),
-                            &events_tx,
-                        )?;
+                match process_capture(conn, active_window, x, y, w, h, &engine) {
+                    Ok(Some(detected)) => {
+                        let _ = events_tx.send(WorkerEvent::OcrText(detected));
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        if is_window_closed_error(&error) {
+                            eprintln!(
+                                "[autoswitch] Active window (0x{active_window:x}) is closed or unavailable."
+                            );
+                        } else {
+                            report_worker_error(
+                                &mut last_ocr_error,
+                                format!("OCR cycle failed: {error:#}"),
+                                &events_tx,
+                            )?;
+                        }
                     }
                 }
             }
@@ -109,7 +115,7 @@ fn process_capture(
     w: u16,
     h: u16,
     engine: &OcrEngine,
-) -> Result<()> {
+) -> Result<Option<String>> {
     let raw = crate::capture::capture_region(conn, window, x, y, w, h)?;
     let img = ImageSource::from_bytes(&raw, (w as u32, h as u32))?;
 
@@ -118,8 +124,9 @@ fn process_capture(
     let text = text.trim();
 
     if text.chars().count() >= 3 && !text.starts_with("Niveau") {
-        println!("Detected text: {text}");
+        println!("Detected text: {}", text);
+        return Ok(Some(text.to_string()));
     }
 
-    Ok(())
+    Ok(None)
 }

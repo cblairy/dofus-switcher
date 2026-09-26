@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
 use crate::string_utils::normalize;
-use crate::shortcut_biding::ShortcutBindings;
-
 /// Simple registry that maps window_id -> normalized character name and provides
 /// matching (exact, substring, fuzzy) against OCR text.
 pub struct NameRegistry {
@@ -10,20 +8,10 @@ pub struct NameRegistry {
 }
 
 impl NameRegistry {
-    pub fn from_bindings(bindings: &ShortcutBindings) -> Self {
-        let mut by_window = HashMap::new();
-
-        for ch in &bindings.characters {
-            if let Some(window_id) = ch.window_id {
-                let norm = normalize(&ch.name);
-                if !norm.is_empty() {
-                    by_window.insert(window_id, norm);
-                }
-            }
-        }
-
-        Self { by_window }
+    pub fn new() -> Self {
+        Self { by_window: HashMap::new() }
     }
+
 
     pub fn set_name(&mut self, window: u32, name: &str) {
         let norm = normalize(name);
@@ -133,25 +121,20 @@ fn levenshtein(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shortcut_biding::ShortcutBindings;
 
     #[test]
     fn simple_match_exact() {
-        let mut s = ShortcutBindings::new();
-        let ch = s.add_character("toto");
-        ch.window_id = Some(0x10);
-
-        let reg = NameRegistry::from_bindings(&s);
+        let mut reg = NameRegistry::new();
+        reg.set_name(0x10, "toto");
         assert_eq!(reg.find_best_match("toto"), Some(0x10));
     }
 
     #[test]
     fn substring_and_fuzzy() {
-        let mut s = ShortcutBindings::new();
-        s.add_character("toto").window_id = Some(1);
-        s.add_character("titi").window_id = Some(2);
+        let mut reg = NameRegistry::new();
+        reg.set_name(1, "toto");
+        reg.set_name(2, "titi");
 
-        let reg = NameRegistry::from_bindings(&s);
         assert_eq!(reg.find_best_match("to"), Some(1)); // substring
         assert_eq!(reg.find_best_match("totoa"), Some(1)); // fuzzy (distance 1)
         assert_eq!(reg.find_best_match("tit"), Some(2));

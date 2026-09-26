@@ -67,6 +67,33 @@ impl WindowListApp {
                 WorkerEvent::Recovered(worker) => {
                     self.state.errors.remove(&worker);
                 }
+                WorkerEvent::OcrText(text) => {
+                    // Debug: show received OCR text and normalized form
+                    let norm_text = crate::string_utils::normalize(&text);
+                    eprintln!("[gui] OCR received: '{}' -> '{}'", text, norm_text);
+
+                    // Build NameRegistry from UI-entered names and attempt to match
+                    let mut reg = crate::name_registry::NameRegistry::new();
+                    eprintln!("[gui] Candidate names:");
+                    for (window, name) in &self.state.character_names {
+                        eprintln!("  0x{window:08x} => '{}'", name);
+                        reg.set_name(*window, name);
+                    }
+
+                    if let Some(target) = reg.find_best_match(&text) {
+                        eprintln!("[gui] OCR matched -> activating 0x{target:08x}");
+                        // activate the matched window
+                        if self.commands_tx.send(super::worker::WindowCommand::Activate(target)).is_err() {
+                            self.state.errors.insert(
+                                WorkerKind::Activation,
+                                "Le moniteur de fenêtres est indisponible.".to_owned(),
+                            );
+                        }
+                    } else {
+                        // no match — optional debug log
+                        eprintln!("[gui] OCR no match for '{}'", text);
+                    }
+                }
             }
         }
 

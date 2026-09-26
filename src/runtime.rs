@@ -17,4 +17,5 @@ pub(crate) enum WorkerEvent {
         message: String,
     },
     Recovered(WorkerKind),
+    OcrText(String),
 }

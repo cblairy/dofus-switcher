@@ -116,6 +116,7 @@ fn msg_refresh_action_failed(action: &str, error: &impl std::fmt::Display) -> St
 
 struct HotkeyRegistry {
     window_shortcuts: HashMap<Window, Hotkey>,
+    window_hotkey_ids: HashMap<Window, HotkeyId>,
     hotkey_windows: HashMap<HotkeyId, Window>,
     hotkey_actions: HashMap<HotkeyId, HotkeyAction>,
 }
@@ -124,6 +125,7 @@ impl HotkeyRegistry {
     fn new() -> Self {
         Self {
             window_shortcuts: HashMap::new(),
+            window_hotkey_ids: HashMap::new(),
             hotkey_windows: HashMap::new(),
             hotkey_actions: HashMap::new(),
         }
@@ -136,30 +138,26 @@ impl HotkeyRegistry {
     }
 
     fn register_window(&mut self, manager: &HotkeyManager, window: Window, hotkey: Hotkey) -> Result<HotkeyId, String> {
-        match manager.register(hotkey) {
-            Ok(id) => {
-                self.window_shortcuts.insert(window, hotkey);
-                self.hotkey_windows.insert(id, window);
-                self.hotkey_actions.insert(id, HotkeyAction::Window(window));
-                Ok(id)
-            }
-            Err(e) => Err(format!("{e:#}")),
+    match manager.register(hotkey) {
+        Ok(id) => {
+            self.window_shortcuts.insert(window, hotkey);
+            self.window_hotkey_ids.insert(window, id);
+            self.hotkey_windows.insert(id, window);
+            self.hotkey_actions.insert(id, HotkeyAction::Window(window));
+            Ok(id)
         }
+        Err(e) => Err(format!("{e:#}")),
     }
+}
 
     fn unregister_window(&mut self, manager: &HotkeyManager, window: Window) {
-        if let Some(hotkey) = self.window_shortcuts.remove(&window) {
-            let hotkey_id = self
-                .hotkey_windows
-                .iter()
-                .find_map(|(id, mapped_window)| (*mapped_window == window && self.window_shortcuts.get(&window) == Some(&hotkey)).then_some(*id));
-            if let Some(id) = hotkey_id {
-                let _ = manager.unregister(id);
-                self.hotkey_windows.remove(&id);
-                self.hotkey_actions.remove(&id);
-            }
-        }
+    self.window_shortcuts.remove(&window);
+    if let Some(id) = self.window_hotkey_ids.remove(&window) {
+        let _ = manager.unregister(id);
+        self.hotkey_windows.remove(&id);
+        self.hotkey_actions.remove(&id);
     }
+}
 
     fn unregister_global(&mut self, manager: &HotkeyManager, action: HotkeyAction) {
         let id = self
