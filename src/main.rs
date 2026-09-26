@@ -2,8 +2,9 @@
 mod autoswitch;
 mod capture;
 mod gui;
+mod runtime;
 mod shortcut_biding;
-pub mod window;
+mod window;
 
 fn main() -> eframe::Result<()> {
     gui::run()

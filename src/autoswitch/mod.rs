@@ -1,60 +1,87 @@
-use super::{capture, window};
-
 use anyhow::{Context, Result};
 use ocrs::{ImageSource, OcrEngine, OcrEngineParams};
 use rten::Model;
-use std::thread;
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 use x11rb::errors::ReplyError;
 use x11rb::rust_connection::RustConnection;
 
-pub fn auto_switch(conn: &RustConnection) {
-    let engine = match init_engine() {
-        Ok(engine) => engine,
-        Err(e) => {
-            eprintln!("[autoswitch] Critical initialization failure: {:#}", e);
-            return;
-        }
-    };
+use crate::runtime::{WorkerEvent, WorkerKind};
+use crate::window;
 
-    let (x, y, w, h) = (76, 163, 208, 70); // TODO: valeur perso hardcodée, prendre l'input utilisateur
+pub(crate) fn auto_switch(
+    conn: &RustConnection,
+    stop_rx: Receiver<()>,
+    events_tx: Sender<WorkerEvent>,
+) -> Result<()> {
+    let engine = init_engine()?;
+    let (x, y, w, h) = (76, 163, 208, 70);
     let mut dofus_windows = window::DofusWindowTracker::new();
+    let mut last_ocr_error = None;
 
     loop {
+        match stop_rx.recv_timeout(Duration::from_millis(300)) {
+            Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+        }
+
         match dofus_windows.refresh(conn) {
             Ok(Some(active_window)) => {
-                if let Err(e) = process_capture(conn, active_window, x, y, w, h, &engine) {
-                    if is_window_closed_error(&e) {
+                report_error_recovered(&mut last_ocr_error, &events_tx);
+                if let Err(error) = process_capture(conn, active_window, x, y, w, h, &engine) {
+                    if is_window_closed_error(&error) {
                         eprintln!(
-                            "[autoswitch] Active window (0x{:x}) is closed or no longer available.",
-                            active_window
+                            "[autoswitch] Active window (0x{active_window:x}) is closed or unavailable."
                         );
-                        thread::sleep(Duration::from_secs(2));
                     } else {
-                        eprintln!("[autoswitch] Error during cycle: {:#}", e);
+                        report_worker_error(
+                            &mut last_ocr_error,
+                            format!("OCR cycle failed: {error:#}"),
+                            &events_tx,
+                        )?;
                     }
                 }
             }
-            Ok(None) => eprintln!("[autoswitch] No active window found."),
-            Err(e) => eprintln!("[autoswitch] Failed to get active window: {:#}", e),
+            Ok(None) => report_error_recovered(&mut last_ocr_error, &events_tx),
+            Err(error) => report_worker_error(
+                &mut last_ocr_error,
+                format!("OCR window tracking failed: {error:#}"),
+                &events_tx,
+            )?,
         }
-
-        thread::sleep(Duration::from_millis(300));
     }
 }
 
-/// Vérifie si l'erreur anyhow provient d'une fenêtre X11 fermée/invalide
+fn report_worker_error(
+    last_error: &mut Option<String>,
+    message: String,
+    events_tx: &Sender<WorkerEvent>,
+) -> Result<()> {
+    if last_error.as_deref() != Some(message.as_str()) {
+        events_tx
+            .send(WorkerEvent::Error {
+                worker: WorkerKind::Ocr,
+                message: message.clone(),
+            })
+            .map_err(|_| anyhow::anyhow!("GUI worker event channel is closed"))?;
+        *last_error = Some(message);
+    }
+    Ok(())
+}
+
+fn report_error_recovered(last_error: &mut Option<String>, events_tx: &Sender<WorkerEvent>) {
+    if last_error.take().is_some() {
+        let _ = events_tx.send(WorkerEvent::Recovered(WorkerKind::Ocr));
+    }
+}
+
 fn is_window_closed_error(err: &anyhow::Error) -> bool {
-    if let Some(reply_err) = err.downcast_ref::<ReplyError>() {
-        if let ReplyError::X11Error(x11_err) = reply_err {
-            // error_code 9 = BadDrawable, error_code 3 = BadWindow
-            return x11_err.error_code == 9 || x11_err.error_code == 3;
-        }
-    }
-    false
+    matches!(
+        err.downcast_ref::<ReplyError>(),
+        Some(ReplyError::X11Error(x11_err)) if x11_err.error_code == 9 || x11_err.error_code == 3
+    )
 }
 
-/// Initialise les modèles OCR une seule fois au lancement
 fn init_engine() -> Result<OcrEngine> {
     let cache_dir = dirs::cache_dir()
         .context("Cache directory not found")?
@@ -66,16 +93,14 @@ fn init_engine() -> Result<OcrEngine> {
     let recognition_model = Model::load_file(cache_dir.join("text-recognition.onnx"))
         .context("Failed to load text-recognition.onnx")?;
 
-    let engine = OcrEngine::new(OcrEngineParams {
+    OcrEngine::new(OcrEngineParams {
         detection_model: Some(detection_model),
         recognition_model: Some(recognition_model),
         ..Default::default()
-    })?;
-
-    Ok(engine)
+    })
+    .context("Failed to initialize OCR engine")
 }
 
-/// Exécute un cycle de capture + OCR
 fn process_capture(
     conn: &RustConnection,
     window: u32,
@@ -85,7 +110,7 @@ fn process_capture(
     h: u16,
     engine: &OcrEngine,
 ) -> Result<()> {
-    let raw = capture::capture_region(conn, window, x, y, w, h)?;
+    let raw = crate::capture::capture_region(conn, window, x, y, w, h)?;
     let img = ImageSource::from_bytes(&raw, (w as u32, h as u32))?;
 
     let input = engine.prepare_input(img)?;
@@ -93,7 +118,7 @@ fn process_capture(
     let text = text.trim();
 
     if text.chars().count() >= 3 && !text.starts_with("Niveau") {
-        println!("Detected text: {}", text);
+        println!("Detected text: {text}");
     }
 
     Ok(())
