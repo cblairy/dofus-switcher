@@ -4,10 +4,17 @@ use x11rb::protocol::xproto::Window;
 pub(crate) enum WorkerKind {
     Monitor,
     Ocr,
+    Activation,
 }
 
 pub(crate) enum WorkerEvent {
-    Windows(Vec<Window>),
-    Error { worker: WorkerKind, message: String },
+    Windows {
+        windows: Vec<Window>,
+        focused_window: Option<Window>,
+    },
+    Error {
+        worker: WorkerKind,
+        message: String,
+    },
     Recovered(WorkerKind),
 }

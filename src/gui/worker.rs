@@ -9,6 +9,7 @@ use anyhow::anyhow;
 
 pub(super) struct WorkerHandle {
     events_rx: Receiver<WorkerEvent>,
+    commands_tx: Sender<u32>,
     monitor_stop_tx: Sender<()>,
     ocr_stop_tx: Sender<()>,
     threads: Vec<JoinHandle<()>>,
@@ -17,7 +18,7 @@ pub(super) struct WorkerHandle {
 impl WorkerHandle {
     pub(super) fn start() -> Self {
         let (events_tx, events_rx) = mpsc::channel();
-        let (_commands_tx, commands_rx) = mpsc::channel();
+        let (commands_tx, commands_rx) = mpsc::channel();
         let (monitor_stop_tx, monitor_stop_rx) = mpsc::channel();
         let (ocr_stop_tx, ocr_stop_rx) = mpsc::channel();
         let monitor_events_tx = events_tx.clone();
@@ -40,6 +41,7 @@ impl WorkerHandle {
 
         Self {
             events_rx,
+            commands_tx,
             monitor_stop_tx,
             ocr_stop_tx,
             threads: vec![monitor, ocr],
@@ -48,6 +50,10 @@ impl WorkerHandle {
 
     pub(super) fn events_rx(&self) -> &Receiver<WorkerEvent> {
         &self.events_rx
+    }
+
+    pub(super) fn commands_tx(&self) -> Sender<u32> {
+        self.commands_tx.clone()
     }
 }
 
@@ -89,13 +95,13 @@ fn window_monitor(
             && let Err(error) = window::activation::activate(&conn, window)
         {
             let _ = updates_tx.send(WorkerEvent::Error {
-                worker: WorkerKind::Monitor,
+                worker: WorkerKind::Activation,
                 message: format!("Failed to activate window 0x{window:08x}: {error:#}"),
             });
         }
 
         match tracker.refresh(&conn) {
-            Ok(_focused_window) => {
+            Ok(focused_window) => {
                 if last_scan_error.take().is_some()
                     && updates_tx
                         .send(WorkerEvent::Recovered(WorkerKind::Monitor))
@@ -104,7 +110,10 @@ fn window_monitor(
                     break;
                 }
                 if updates_tx
-                    .send(WorkerEvent::Windows(tracker.windows().to_vec()))
+                    .send(WorkerEvent::Windows {
+                        windows: tracker.windows().to_vec(),
+                        focused_window,
+                    })
                     .is_err()
                 {
                     break;
