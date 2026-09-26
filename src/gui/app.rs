@@ -5,7 +5,7 @@ use std::time::Duration;
 use eframe::egui;
 use handy_keys::{Hotkey, KeyboardListener};
 
-use super::state::WindowListState;
+use super::state::{GlobalAction, WindowListState};
 use super::worker::WorkerHandle;
 use crate::runtime::{WorkerEvent, WorkerKind};
 
@@ -71,8 +71,8 @@ impl WindowListApp {
         }
 
         while let Ok(hotkey) = self.capture_rx.try_recv() {
+            let shortcut = hotkey.to_string();
             if let Some(window) = self.state.capture_window {
-                let shortcut = hotkey.to_string();
                 self.state.assign_shortcut(window, Some(shortcut.clone()));
                 self.state.capture_window = None;
                 self.state.errors.remove(&WorkerKind::Activation);
@@ -80,6 +80,30 @@ impl WindowListApp {
                     window,
                     hotkey: Some(shortcut),
                 });
+                continue;
+            }
+
+            if let Some(action) = self.state.capture_global {
+                match action {
+                    GlobalAction::Next => {
+                        self.state.next_key = Some(shortcut.clone());
+                        self.state.capture_global = None;
+                        self.state.errors.remove(&WorkerKind::Activation);
+                        let _ = self.commands_tx.send(super::worker::WindowCommand::AssignGlobal {
+                            action: crate::gui::state::GlobalAction::Next,
+                            hotkey: Some(shortcut),
+                        });
+                    }
+                    GlobalAction::Previous => {
+                        self.state.previous_key = Some(shortcut.clone());
+                        self.state.capture_global = None;
+                        self.state.errors.remove(&WorkerKind::Activation);
+                        let _ = self.commands_tx.send(super::worker::WindowCommand::AssignGlobal {
+                            action: crate::gui::state::GlobalAction::Previous,
+                            hotkey: Some(shortcut),
+                        });
+                    }
+                }
             }
         }
     }
@@ -88,7 +112,7 @@ impl WindowListApp {
 impl eframe::App for WindowListApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.receive_worker_events();
-        ui.heading("Detected Dofus windows");
+        ui.heading("Fenêtres Dofus détectées");
         ui.separator();
 
         for error in self.state.errors.values() {
@@ -97,17 +121,54 @@ impl eframe::App for WindowListApp {
 
         if let Some(window) = self.state.focused_window {
             ui.label(format!(
-                "Last focused Dofus window: {} (0x{window:08x})",
+                "Dernière fenêtre Dofus focalisée : {} (0x{window:08x})",
                 self.state.character_label(window)
             ));
         } else {
-            ui.label("No Dofus window detected.");
+            ui.label("Aucune fenêtre Dofus détectée.");
         }
 
         ui.separator();
 
+        // Global next/previous shortcut controls
+        ui.horizontal(|ui| {
+            ui.label("Raccourcis globaux :");
+
+            // Previous
+            if self.state.capture_global == Some(GlobalAction::Previous) {
+                if ui.button("Appuyez sur une touche…").clicked() {
+                    self.state.capture_global = None;
+                }
+            } else {
+                let label = self
+                    .state
+                    .previous_key
+                    .clone()
+                    .unwrap_or_else(|| "Précédent".to_owned());
+                if ui.button(format!("Précédent : {}", label)).clicked() {
+                    self.state.capture_global = Some(GlobalAction::Previous);
+                }
+            }
+
+            // Next
+            if self.state.capture_global == Some(GlobalAction::Next) {
+                if ui.button("Appuyez sur une touche…").clicked() {
+                    self.state.capture_global = None;
+                }
+            } else {
+                let label = self
+                    .state
+                    .next_key
+                    .clone()
+                    .unwrap_or_else(|| "Suivant".to_owned());
+                if ui.button(format!("Suivant : {}", label)).clicked() {
+                    self.state.capture_global = Some(GlobalAction::Next);
+                }
+            }
+        });
+
         if self.state.windows.is_empty() {
-            ui.label("No Dofus windows found.");
+            ui.label("Aucune fenêtre Dofus trouvée.");
         } else {
             let windows = self.state.windows.clone();
             for (index, window) in windows.into_iter().enumerate() {
@@ -117,7 +178,7 @@ impl eframe::App for WindowListApp {
                     if ui
                         .selectable_label(
                             self.state.selected_window == Some(window),
-                            format!("{marker}Window {} · 0x{window:08x}", index + 1),
+                            format!("{marker}Fenêtre {} · 0x{window:08x}", index + 1),
                         )
                         .clicked()
                     {
@@ -129,7 +190,7 @@ impl eframe::App for WindowListApp {
                         {
                             self.state.errors.insert(
                                 WorkerKind::Activation,
-                                "Window monitor is unavailable.".to_owned(),
+                                "Le moniteur de fenêtres est indisponible.".to_owned(),
                             );
                         }
                     }

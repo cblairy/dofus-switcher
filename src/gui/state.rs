@@ -2,15 +2,42 @@ use std::collections::HashMap;
 
 use x11rb::protocol::xproto::Window;
 
-#[derive(Default)]
+/// Actions for global shortcuts handled by the worker
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum GlobalAction {
+    Next,
+    Previous,
+}
+
 pub(super) struct WindowListState {
     pub(super) windows: Vec<Window>,
     pub(super) focused_window: Option<Window>,
     pub(super) selected_window: Option<Window>,
     pub(super) character_names: HashMap<Window, String>,
     pub(super) shortcut_keys: HashMap<Window, String>,
+    pub(super) next_key: Option<String>,
+    pub(super) previous_key: Option<String>,
     pub(super) capture_window: Option<Window>,
+    pub(super) capture_global: Option<GlobalAction>,
     pub(super) errors: HashMap<crate::runtime::WorkerKind, String>,
+}
+
+impl Default for WindowListState {
+    fn default() -> Self {
+        Self {
+            windows: Vec::new(),
+            focused_window: None,
+            selected_window: None,
+            character_names: HashMap::new(),
+            shortcut_keys: HashMap::new(),
+            // Defaults requested: Tab for Next, try '²' for Previous but fall back to ` if needed
+            next_key: Some("Tab".to_owned()),
+            previous_key: Some("`".to_owned()),
+            capture_window: None,
+            capture_global: None,
+            errors: HashMap::new(),
+        }
+    }
 }
 
 impl WindowListState {
@@ -46,7 +73,7 @@ impl WindowListState {
             .get(&window)
             .filter(|name| !name.trim().is_empty())
             .map(String::as_str)
-            .unwrap_or("Unassigned")
+            .unwrap_or("Non assigné")
     }
 }
 
@@ -63,10 +90,12 @@ mod tests {
             selected_window: Some(2),
             character_names: HashMap::from([(1, "Alya".to_owned()), (2, "Boris".to_owned())]),
             shortcut_keys: HashMap::from([(1, "1".to_owned()), (2, "2".to_owned())]),
+            next_key: None,
+            previous_key: None,
             capture_window: None,
+            capture_global: None,
             errors: HashMap::new(),
         };
-
         state.apply_windows(vec![1, 3], Some(3));
 
         assert_eq!(state.windows, vec![1, 3]);
@@ -87,10 +116,12 @@ mod tests {
             selected_window: Some(2),
             character_names: HashMap::from([(2, "Boris".to_owned())]),
             shortcut_keys: HashMap::from([(2, "3".to_owned())]),
+            next_key: None,
+            previous_key: None,
             capture_window: None,
+            capture_global: None,
             errors: HashMap::new(),
         };
-
         state.apply_windows(vec![2, 1], Some(1));
 
         assert_eq!(state.selected_window, Some(2));
@@ -105,7 +136,15 @@ mod tests {
     fn assigning_shortcut_moves_it_from_previous_window() {
         let mut state = WindowListState {
             shortcut_keys: HashMap::from([(1, "1".to_owned()), (2, "2".to_owned())]),
-            ..Default::default()
+            next_key: None,
+            previous_key: None,
+            capture_window: None,
+            capture_global: None,
+            errors: HashMap::new(),
+            windows: Vec::new(),
+            focused_window: None,
+            selected_window: None,
+            character_names: HashMap::new(),
         };
 
         state.assign_shortcut(2, Some("1".to_owned()));
@@ -130,7 +169,7 @@ mod tests {
         };
 
         assert_eq!(state.character_label(1), "  Alya  ");
-        assert_eq!(state.character_label(2), "Unassigned");
-        assert_eq!(state.character_label(3), "Unassigned");
+        assert_eq!(state.character_label(2), "Non assigné");
+        assert_eq!(state.character_label(3), "Non assigné");
     }
 }
