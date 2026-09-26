@@ -1,7 +1,9 @@
+use std::sync::mpsc;
+use std::thread;
 use std::time::Duration;
 
 use eframe::egui;
-use x11rb::protocol::xproto::Window;
+use handy_keys::{Hotkey, KeyboardListener};
 
 use super::state::WindowListState;
 use super::worker::WorkerHandle;
@@ -18,16 +20,33 @@ pub(crate) fn run() -> eframe::Result<()> {
 
 struct WindowListApp {
     worker: WorkerHandle,
-    commands_tx: std::sync::mpsc::Sender<Window>,
+    commands_tx: mpsc::Sender<super::worker::WindowCommand>,
+    capture_rx: mpsc::Receiver<Hotkey>,
     state: WindowListState,
 }
 
 impl WindowListApp {
     fn new(worker: WorkerHandle) -> Self {
         let commands_tx = worker.commands_tx();
+        let (capture_tx, capture_rx) = mpsc::channel();
+        let listener = KeyboardListener::new();
+        if let Ok(listener) = listener {
+            let tx = capture_tx;
+            thread::spawn(move || {
+                while let Ok(event) = listener.recv() {
+                    if event.is_key_down {
+                        let Ok(hotkey) = event.as_hotkey() else {
+                            continue;
+                        };
+                        let _ = tx.send(hotkey);
+                    }
+                }
+            });
+        }
         Self {
             worker,
             commands_tx,
+            capture_rx,
             state: WindowListState::default(),
         }
     }
@@ -48,6 +67,19 @@ impl WindowListApp {
                 WorkerEvent::Recovered(worker) => {
                     self.state.errors.remove(&worker);
                 }
+            }
+        }
+
+        while let Ok(hotkey) = self.capture_rx.try_recv() {
+            if let Some(window) = self.state.capture_window {
+                let shortcut = hotkey.to_string();
+                self.state.assign_shortcut(window, Some(shortcut.clone()));
+                self.state.capture_window = None;
+                self.state.errors.remove(&WorkerKind::Activation);
+                let _ = self.commands_tx.send(super::worker::WindowCommand::AssignShortcut {
+                    window,
+                    hotkey: Some(shortcut),
+                });
             }
         }
     }
@@ -90,14 +122,39 @@ impl eframe::App for WindowListApp {
                         .clicked()
                     {
                         self.state.selected_window = Some(window);
-                        if self.commands_tx.send(window).is_err() {
+                        if self
+                            .commands_tx
+                            .send(super::worker::WindowCommand::Activate(window))
+                            .is_err()
+                        {
                             self.state.errors.insert(
                                 WorkerKind::Activation,
                                 "Window monitor is unavailable.".to_owned(),
                             );
                         }
                     }
-                    ui.text_edit_singleline(self.state.character_names.entry(window).or_default());
+                    ui.add(
+                        egui::TextEdit::singleline(
+                            self.state.character_names.entry(window).or_default(),
+                        )
+                        .hint_text("Nom du personnage"),
+                    );
+
+                    if self.state.capture_window == Some(window) {
+                        if ui.button("Appuyez sur une touche…").clicked() {
+                            self.state.capture_window = None;
+                        }
+                    } else {
+                        let button_label = self
+                            .state
+                            .shortcut_keys
+                            .get(&window)
+                            .cloned()
+                            .unwrap_or_else(|| "Touche".to_owned());
+                        if ui.button(button_label).clicked() {
+                            self.state.capture_window = Some(window);
+                        }
+                    }
                 });
             }
         }

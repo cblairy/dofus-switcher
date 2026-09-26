@@ -8,6 +8,8 @@ pub(super) struct WindowListState {
     pub(super) focused_window: Option<Window>,
     pub(super) selected_window: Option<Window>,
     pub(super) character_names: HashMap<Window, String>,
+    pub(super) shortcut_keys: HashMap<Window, String>,
+    pub(super) capture_window: Option<Window>,
     pub(super) errors: HashMap<crate::runtime::WorkerKind, String>,
 }
 
@@ -17,11 +19,25 @@ impl WindowListState {
         self.focused_window = focused_window;
         self.character_names
             .retain(|window, _| self.windows.contains(window));
+        self.shortcut_keys
+            .retain(|window, _| self.windows.contains(window));
         if self
             .selected_window
             .is_some_and(|window| !self.windows.contains(&window))
         {
             self.selected_window = None;
+        }
+        if self.capture_window.is_some_and(|window| !self.windows.contains(&window)) {
+            self.capture_window = None;
+        }
+    }
+
+    pub(super) fn assign_shortcut(&mut self, window: Window, key: Option<String>) {
+        self.shortcut_keys.retain(|mapped_window, mapped_key| {
+            *mapped_window != window && Some(mapped_key.clone()) != key
+        });
+        if let Some(key) = key {
+            self.shortcut_keys.insert(window, key);
         }
     }
 
@@ -46,6 +62,8 @@ mod tests {
             focused_window: Some(2),
             selected_window: Some(2),
             character_names: HashMap::from([(1, "Alya".to_owned()), (2, "Boris".to_owned())]),
+            shortcut_keys: HashMap::from([(1, "1".to_owned()), (2, "2".to_owned())]),
+            capture_window: None,
             errors: HashMap::new(),
         };
 
@@ -58,6 +76,7 @@ mod tests {
             state.character_names,
             HashMap::from([(1, "Alya".to_owned())])
         );
+        assert_eq!(state.shortcut_keys, HashMap::from([(1, "1".to_owned())]));
     }
 
     #[test]
@@ -67,6 +86,8 @@ mod tests {
             focused_window: None,
             selected_window: Some(2),
             character_names: HashMap::from([(2, "Boris".to_owned())]),
+            shortcut_keys: HashMap::from([(2, "3".to_owned())]),
+            capture_window: None,
             errors: HashMap::new(),
         };
 
@@ -77,6 +98,28 @@ mod tests {
             state.character_names.get(&2).map(String::as_str),
             Some("Boris")
         );
+        assert_eq!(state.shortcut_keys.get(&2), Some(&"3".to_owned()));
+    }
+
+    #[test]
+    fn assigning_shortcut_moves_it_from_previous_window() {
+        let mut state = WindowListState {
+            shortcut_keys: HashMap::from([(1, "1".to_owned()), (2, "2".to_owned())]),
+            ..Default::default()
+        };
+
+        state.assign_shortcut(2, Some("1".to_owned()));
+
+        assert_eq!(state.shortcut_keys, HashMap::from([(2, "1".to_owned())]));
+    }
+
+    #[test]
+    fn shortcut_can_be_removed() {
+        let mut state = WindowListState::default();
+
+        state.assign_shortcut(1, Some("Ctrl+Alt+K".to_owned()));
+        state.assign_shortcut(1, None);
+        assert!(state.shortcut_keys.is_empty());
     }
 
     #[test]

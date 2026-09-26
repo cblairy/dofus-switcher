@@ -1,11 +1,9 @@
-// main.rs
-mod autoswitch;
-mod capture;
-mod gui;
-mod runtime;
-mod shortcut_biding;
-mod window;
+    mod autoswitch;
+    mod capture;
+    mod gui;
+    mod runtime;
+    mod window;
 
-fn main() -> eframe::Result<()> {
-    gui::run()
-}
+    fn main() -> eframe::Result<()> {
+        gui::run()
+    }
