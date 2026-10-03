@@ -448,9 +448,8 @@ fn window_monitor(
     _previous_hotkey = register_previous_candidates(&manager, &mut registry, &updates_tx);
 
     loop {
-        match stop_rx.recv_timeout(Duration::from_millis(300)) {
-            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        if stop_rx.try_recv().is_ok() {
+            break;
         }
 
         while let Ok(command) = commands_rx.try_recv() {
@@ -627,5 +626,7 @@ fn window_monitor(
                 }
             }
         }
+
+        std::thread::sleep(Duration::from_millis(10));
     }
 }

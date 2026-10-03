@@ -20,9 +20,8 @@ pub(crate) fn auto_switch(
     let mut last_ocr_error = None;
 
     loop {
-        match stop_rx.recv_timeout(Duration::from_millis(300)) {
-            Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+        if stop_rx.try_recv().is_ok() {
+            return Ok(());
         }
 
         match dofus_windows.refresh(conn) {
@@ -55,6 +54,8 @@ pub(crate) fn auto_switch(
                 &events_tx,
             )?,
         }
+
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
