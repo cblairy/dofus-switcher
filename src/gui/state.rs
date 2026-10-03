@@ -20,6 +20,8 @@ pub(super) struct WindowListState {
     pub(super) capture_window: Option<Window>,
     pub(super) capture_global: Option<GlobalAction>,
     pub(super) errors: HashMap<crate::runtime::WorkerKind, String>,
+    pub(super) restrict_prev_next_to_dofus: bool,
+    pub(super) persisted_characters: Vec<crate::config::CharacterConfig>,
 }
 
 impl Default for WindowListState {
@@ -36,6 +38,8 @@ impl Default for WindowListState {
             capture_window: None,
             capture_global: None,
             errors: HashMap::new(),
+            restrict_prev_next_to_dofus: true,
+            persisted_characters: Vec::new(),
         }
     }
 }
@@ -56,6 +60,24 @@ impl WindowListState {
         }
         if self.capture_window.is_some_and(|window| !self.windows.contains(&window)) {
             self.capture_window = None;
+        }
+        self.apply_persisted_characters();
+    }
+
+    pub(super) fn apply_persisted_characters(&mut self) {
+        if self.persisted_characters.is_empty() {
+            return;
+        }
+
+        for (index, window) in self.windows.iter().enumerate() {
+            if let Some(entry) = self.persisted_characters.get(index) {
+                if !entry.name.trim().is_empty() {
+                    self.character_names.insert(*window, entry.name.clone());
+                }
+                if let Some(shortcut) = &entry.shortcut {
+                    self.shortcut_keys.insert(*window, shortcut.clone());
+                }
+            }
         }
     }
 
@@ -95,6 +117,8 @@ mod tests {
             capture_window: None,
             capture_global: None,
             errors: HashMap::new(),
+            restrict_prev_next_to_dofus: true,
+            persisted_characters: Vec::new(),
         };
         state.apply_windows(vec![1, 3], Some(3));
 
@@ -121,6 +145,8 @@ mod tests {
             capture_window: None,
             capture_global: None,
             errors: HashMap::new(),
+            restrict_prev_next_to_dofus: true,
+            persisted_characters: Vec::new(),
         };
         state.apply_windows(vec![2, 1], Some(1));
 
@@ -145,6 +171,8 @@ mod tests {
             focused_window: None,
             selected_window: None,
             character_names: HashMap::new(),
+            restrict_prev_next_to_dofus: true,
+            persisted_characters: Vec::new(),
         };
 
         state.assign_shortcut(2, Some("1".to_owned()));

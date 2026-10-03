@@ -13,3 +13,5 @@ img_hash = "3.2.0"
 ocrs = "0.13.1"
 rten = "0.26.0"
 x11rb = "0.14.0"
+serde = { version = "1", features = ["derive"] }
+toml = "1.1.6"

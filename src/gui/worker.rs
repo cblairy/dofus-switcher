@@ -23,6 +23,8 @@ pub(super) enum WindowCommand {
     Activate(Window),
     AssignShortcut { window: Window, hotkey: Option<String> },
     AssignGlobal { action: GlobalAction, hotkey: Option<String> },
+    SetRestrictPrevNextToDofus(bool)
+
 }
 
 pub(super) struct WorkerHandle {
@@ -412,6 +414,7 @@ fn window_monitor(
     commands_rx: Receiver<WindowCommand>,
     stop_rx: Receiver<()>,
 ) {
+    let mut restrict_prev_next_to_dofus = true;
     let (conn, _) = match x11rb::connect(None) {
         Ok(connection) => connection,
         Err(error) => {
@@ -473,9 +476,11 @@ fn window_monitor(
                         }
                     }
                 }
+                WindowCommand::SetRestrictPrevNextToDofus(value) => {
+                    restrict_prev_next_to_dofus = value;
+                }
             }
         }
-
         while let Some(event) = manager.try_recv() {
             if event.state != HotkeyState::Pressed {
                 continue;
@@ -494,6 +499,19 @@ fn window_monitor(
             if let Some(action) = registry.get_action_for_id(&event.id) {
                 match action {
                     HotkeyAction::Next => {
+                        if restrict_prev_next_to_dofus {
+                            match window::active_window(&conn, tracker.windows()) {
+                                Ok(None) => continue,
+                                Ok(Some(_)) => {}
+                                Err(error) => {
+                                    let _ = updates_tx.send(WorkerEvent::Error {
+                                        worker: WorkerKind::Monitor,
+                                        message: format!("Échec de vérification du focus Dofus : {error:#}"),
+                                    });
+                                    continue;
+                                }
+                            }
+                        }
                         match tracker.refresh(&conn) {
                             Ok(Some(focused)) => {
                                 let windows = tracker.windows().to_vec();

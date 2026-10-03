@@ -30,6 +30,7 @@ impl WindowListApp {
         let commands_tx = worker.commands_tx();
         let (capture_tx, capture_rx) = mpsc::channel();
         let listener = KeyboardListener::new();
+
         if let Ok(listener) = listener {
             let tx = capture_tx;
             thread::spawn(move || {
@@ -43,11 +44,35 @@ impl WindowListApp {
                 }
             });
         }
+
+        let mut state = WindowListState::default();
+
+        // chargement de la config persistée
+        if let Ok(config) = crate::config::load() {
+            if config.next_key.is_some() {
+                state.next_key = config.next_key.clone();
+            }
+            if config.previous_key.is_some() {
+                state.previous_key = config.previous_key.clone();
+            }
+            state.restrict_prev_next_to_dofus = config.restrict_prev_next_to_dofus;
+            state.persisted_characters = config.characters;
+
+            if let Some(hotkey) = state.next_key.clone() {
+                let _ = commands_tx.send(super::worker::WindowCommand::AssignGlobal { action: GlobalAction::Next, hotkey: Some(hotkey)});
+            }
+            if let Some(hotkey) = state.previous_key.clone() {
+                let _ = commands_tx.send(super::worker::WindowCommand::AssignGlobal { action: GlobalAction::Previous, hotkey: Some(hotkey)});
+            }
+
+            let _ = commands_tx.send(super::worker::WindowCommand::SetRestrictPrevNextToDofus(state.restrict_prev_next_to_dofus));
+        }
+
         Self {
             worker,
             commands_tx,
             capture_rx,
-            state: WindowListState::default(),
+            state,
         }
     }
 
@@ -132,6 +157,37 @@ impl WindowListApp {
                     }
                 }
             }
+        }
+    }
+
+    fn persist_config(&self) {
+        let characters = self
+            .state
+            .windows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, window)| {
+                let name = self.state.character_names.get(window).cloned().unwrap_or_default();
+                if name.trim().is_empty() && self.state.persisted_characters.get(index).map(|entry| entry.name.trim().is_empty()).unwrap_or(true) {
+                    return None;
+                }
+                Some(crate::config::CharacterConfig {
+                    name: name.trim().to_owned(),
+                    shortcut: self.state.shortcut_keys.get(window).cloned(),
+                })
+            })
+            .collect();
+
+        let config = crate::config::PersistedConfig {
+            version: 1,
+            characters,
+            next_key: self.state.next_key.clone(),
+            previous_key: self.state.previous_key.clone(),
+            restrict_prev_next_to_dofus: self.state.restrict_prev_next_to_dofus,
+        };
+
+        if let Err(error) = crate::config::save(&config) {
+            eprintln!("[config] Echec de la sauvegarde : {error:#}");
         }
     }
 }
@@ -247,6 +303,7 @@ impl eframe::App for WindowListApp {
             }
         }
 
+        self.persist_config();
         ui.ctx().request_repaint_after(Duration::from_millis(100));
     }
 }

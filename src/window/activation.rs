@@ -1,7 +1,6 @@
 use anyhow::Result;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
-use x11rb::wrapper::ConnectionExt as _;
 use x11rb::CURRENT_TIME;
 
 pub(crate) fn activate(conn: &impl Connection, window: Window) -> Result<()> {
