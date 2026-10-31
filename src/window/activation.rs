@@ -1,7 +1,7 @@
 use anyhow::Result;
+use x11rb::CURRENT_TIME;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
-use x11rb::CURRENT_TIME;
 
 pub(crate) fn activate(conn: &impl Connection, window: Window) -> Result<()> {
     let screen = &conn.setup().roots[0];

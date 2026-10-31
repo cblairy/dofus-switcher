@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -23,6 +24,7 @@ struct WindowListApp {
     commands_tx: mpsc::Sender<super::worker::WindowCommand>,
     capture_rx: mpsc::Receiver<Hotkey>,
     state: WindowListState,
+    registered_shortcuts: HashSet<u32>,
 }
 
 impl WindowListApp {
@@ -59,13 +61,21 @@ impl WindowListApp {
             state.persisted_characters = config.characters;
 
             if let Some(hotkey) = state.next_key.clone() {
-                let _ = commands_tx.send(super::worker::WindowCommand::AssignGlobal { action: GlobalAction::Next, hotkey: Some(hotkey)});
+                let _ = commands_tx.send(super::worker::WindowCommand::AssignGlobal {
+                    action: GlobalAction::Next,
+                    hotkey: Some(hotkey),
+                });
             }
             if let Some(hotkey) = state.previous_key.clone() {
-                let _ = commands_tx.send(super::worker::WindowCommand::AssignGlobal { action: GlobalAction::Previous, hotkey: Some(hotkey)});
+                let _ = commands_tx.send(super::worker::WindowCommand::AssignGlobal {
+                    action: GlobalAction::Previous,
+                    hotkey: Some(hotkey),
+                });
             }
 
-            let _ = commands_tx.send(super::worker::WindowCommand::SetRestrictPrevNextToDofus(state.restrict_prev_next_to_dofus));
+            let _ = commands_tx.send(super::worker::WindowCommand::SetRestrictPrevNextToDofus(
+                state.restrict_prev_next_to_dofus,
+            ));
         }
 
         Self {
@@ -73,7 +83,40 @@ impl WindowListApp {
             commands_tx,
             capture_rx,
             state,
+            registered_shortcuts: HashSet::new(),
         }
+    }
+
+    fn sync_window_shortcuts(&mut self) {
+        for &window in &self.state.windows {
+            let Some(hotkey) = self.state.shortcut_keys.get(&window).cloned() else {
+                continue;
+            };
+
+            if self.registered_shortcuts.contains(&window) {
+                continue;
+            }
+
+            if self
+                .commands_tx
+                .send(super::worker::WindowCommand::AssignShortcut {
+                    window,
+                    hotkey: Some(hotkey),
+                })
+                .is_err()
+            {
+                self.state.errors.insert(
+                    WorkerKind::Activation,
+                    "Le moniteur de fenêtres est indisponible.".to_owned(),
+                );
+                return;
+            }
+
+            self.registered_shortcuts.insert(window);
+        }
+
+        self.registered_shortcuts
+            .retain(|window| self.state.windows.contains(window));
     }
 
     fn receive_worker_events(&mut self) {
@@ -84,6 +127,7 @@ impl WindowListApp {
                     focused_window,
                 } => {
                     self.state.apply_windows(windows, focused_window);
+                    self.sync_window_shortcuts();
                     self.state.errors.remove(&WorkerKind::Monitor);
                 }
                 WorkerEvent::Error { worker, message } => {
@@ -108,7 +152,11 @@ impl WindowListApp {
                     if let Some(target) = reg.find_best_match(&text) {
                         eprintln!("[gui] OCR matched -> activating 0x{target:08x}");
                         // activate the matched window
-                        if self.commands_tx.send(super::worker::WindowCommand::Activate(target)).is_err() {
+                        if self
+                            .commands_tx
+                            .send(super::worker::WindowCommand::Activate(target))
+                            .is_err()
+                        {
                             self.state.errors.insert(
                                 WorkerKind::Activation,
                                 "Le moniteur de fenêtres est indisponible.".to_owned(),
@@ -126,12 +174,15 @@ impl WindowListApp {
             let shortcut = hotkey.to_string();
             if let Some(window) = self.state.capture_window {
                 self.state.assign_shortcut(window, Some(shortcut.clone()));
+                self.registered_shortcuts.insert(window);
                 self.state.capture_window = None;
                 self.state.errors.remove(&WorkerKind::Activation);
-                let _ = self.commands_tx.send(super::worker::WindowCommand::AssignShortcut {
-                    window,
-                    hotkey: Some(shortcut),
-                });
+                let _ = self
+                    .commands_tx
+                    .send(super::worker::WindowCommand::AssignShortcut {
+                        window,
+                        hotkey: Some(shortcut),
+                    });
                 continue;
             }
 
@@ -141,19 +192,23 @@ impl WindowListApp {
                         self.state.next_key = Some(shortcut.clone());
                         self.state.capture_global = None;
                         self.state.errors.remove(&WorkerKind::Activation);
-                        let _ = self.commands_tx.send(super::worker::WindowCommand::AssignGlobal {
-                            action: crate::gui::state::GlobalAction::Next,
-                            hotkey: Some(shortcut),
-                        });
+                        let _ = self
+                            .commands_tx
+                            .send(super::worker::WindowCommand::AssignGlobal {
+                                action: crate::gui::state::GlobalAction::Next,
+                                hotkey: Some(shortcut),
+                            });
                     }
                     GlobalAction::Previous => {
                         self.state.previous_key = Some(shortcut.clone());
                         self.state.capture_global = None;
                         self.state.errors.remove(&WorkerKind::Activation);
-                        let _ = self.commands_tx.send(super::worker::WindowCommand::AssignGlobal {
-                            action: crate::gui::state::GlobalAction::Previous,
-                            hotkey: Some(shortcut),
-                        });
+                        let _ = self
+                            .commands_tx
+                            .send(super::worker::WindowCommand::AssignGlobal {
+                                action: crate::gui::state::GlobalAction::Previous,
+                                hotkey: Some(shortcut),
+                            });
                     }
                 }
             }
@@ -167,8 +222,20 @@ impl WindowListApp {
             .iter()
             .enumerate()
             .filter_map(|(index, window)| {
-                let name = self.state.character_names.get(window).cloned().unwrap_or_default();
-                if name.trim().is_empty() && self.state.persisted_characters.get(index).map(|entry| entry.name.trim().is_empty()).unwrap_or(true) {
+                let name = self
+                    .state
+                    .character_names
+                    .get(window)
+                    .cloned()
+                    .unwrap_or_default();
+                if name.trim().is_empty()
+                    && self
+                        .state
+                        .persisted_characters
+                        .get(index)
+                        .map(|entry| entry.name.trim().is_empty())
+                        .unwrap_or(true)
+                {
                     return None;
                 }
                 Some(crate::config::CharacterConfig {

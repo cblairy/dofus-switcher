@@ -9,9 +9,10 @@ pub struct NameRegistry {
 
 impl NameRegistry {
     pub fn new() -> Self {
-        Self { by_window: HashMap::new() }
+        Self {
+            by_window: HashMap::new(),
+        }
     }
-
 
     pub fn set_name(&mut self, window: u32, name: &str) {
         let norm = normalize(name);
@@ -103,10 +104,14 @@ fn levenshtein(a: &str, b: &str) -> usize {
 
     for i in 1..=al {
         for j in 1..=bl {
-            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
             d[i][j] = *[
-                d[i - 1][j] + 1,     // deletion
-                d[i][j - 1] + 1,     // insertion
+                d[i - 1][j] + 1,        // deletion
+                d[i][j - 1] + 1,        // insertion
                 d[i - 1][j - 1] + cost, // substitution
             ]
             .iter()

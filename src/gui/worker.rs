@@ -21,10 +21,15 @@ enum HotkeyAction {
 
 pub(super) enum WindowCommand {
     Activate(Window),
-    AssignShortcut { window: Window, hotkey: Option<String> },
-    AssignGlobal { action: GlobalAction, hotkey: Option<String> },
-    SetRestrictPrevNextToDofus(bool)
-
+    AssignShortcut {
+        window: Window,
+        hotkey: Option<String>,
+    },
+    AssignGlobal {
+        action: GlobalAction,
+        hotkey: Option<String>,
+    },
+    SetRestrictPrevNextToDofus(bool),
 }
 
 pub(super) struct WorkerHandle {
@@ -96,11 +101,21 @@ fn msg_activate_window(window: Window, error: &impl std::fmt::Display) -> String
     format!("Échec d'activation de la fenêtre 0x{window:08x} : {error}")
 }
 
-fn msg_register_shortcut_window(hotkey: &str, window: Window, error: &impl std::fmt::Display) -> String {
-    format!("Échec d'enregistrement du raccourci '{hotkey}' pour la fenêtre 0x{window:08x} : {error}")
+fn msg_register_shortcut_window(
+    hotkey: &str,
+    window: Window,
+    error: &impl std::fmt::Display,
+) -> String {
+    format!(
+        "Échec d'enregistrement du raccourci '{hotkey}' pour la fenêtre 0x{window:08x} : {error}"
+    )
 }
 
-fn msg_invalid_shortcut_window(hotkey: &str, window: Window, error: &impl std::fmt::Display) -> String {
+fn msg_invalid_shortcut_window(
+    hotkey: &str,
+    window: Window,
+    error: &impl std::fmt::Display,
+) -> String {
     format!("Raccourci invalide '{hotkey}' pour la fenêtre 0x{window:08x} : {error}")
 }
 
@@ -139,27 +154,32 @@ impl HotkeyRegistry {
             .find_map(|(w, h)| (h == hotkey).then_some(*w))
     }
 
-    fn register_window(&mut self, manager: &HotkeyManager, window: Window, hotkey: Hotkey) -> Result<HotkeyId, String> {
-    match manager.register(hotkey) {
-        Ok(id) => {
-            self.window_shortcuts.insert(window, hotkey);
-            self.window_hotkey_ids.insert(window, id);
-            self.hotkey_windows.insert(id, window);
-            self.hotkey_actions.insert(id, HotkeyAction::Window(window));
-            Ok(id)
+    fn register_window(
+        &mut self,
+        manager: &HotkeyManager,
+        window: Window,
+        hotkey: Hotkey,
+    ) -> Result<HotkeyId, String> {
+        match manager.register(hotkey) {
+            Ok(id) => {
+                self.window_shortcuts.insert(window, hotkey);
+                self.window_hotkey_ids.insert(window, id);
+                self.hotkey_windows.insert(id, window);
+                self.hotkey_actions.insert(id, HotkeyAction::Window(window));
+                Ok(id)
+            }
+            Err(e) => Err(format!("{e:#}")),
         }
-        Err(e) => Err(format!("{e:#}")),
     }
-}
 
     fn unregister_window(&mut self, manager: &HotkeyManager, window: Window) {
-    self.window_shortcuts.remove(&window);
-    if let Some(id) = self.window_hotkey_ids.remove(&window) {
-        let _ = manager.unregister(id);
-        self.hotkey_windows.remove(&id);
-        self.hotkey_actions.remove(&id);
+        self.window_shortcuts.remove(&window);
+        if let Some(id) = self.window_hotkey_ids.remove(&window) {
+            let _ = manager.unregister(id);
+            self.hotkey_windows.remove(&id);
+            self.hotkey_actions.remove(&id);
+        }
     }
-}
 
     fn unregister_global(&mut self, manager: &HotkeyManager, action: HotkeyAction) {
         let id = self
@@ -173,7 +193,12 @@ impl HotkeyRegistry {
         }
     }
 
-    fn register_global(&mut self, manager: &HotkeyManager, action: HotkeyAction, hotkey: Hotkey) -> Result<HotkeyId, String> {
+    fn register_global(
+        &mut self,
+        manager: &HotkeyManager,
+        action: HotkeyAction,
+        hotkey: Hotkey,
+    ) -> Result<HotkeyId, String> {
         match manager.register(hotkey) {
             Ok(id) => {
                 self.hotkey_actions.insert(id, action);
@@ -192,14 +217,22 @@ impl HotkeyRegistry {
     }
 }
 
-fn try_register(manager: &HotkeyManager, s: &str, action: HotkeyAction, registry: &mut HotkeyRegistry, updates_tx: &Sender<WorkerEvent>) -> Option<Hotkey> {
+fn try_register(
+    manager: &HotkeyManager,
+    s: &str,
+    action: HotkeyAction,
+    registry: &mut HotkeyRegistry,
+    updates_tx: &Sender<WorkerEvent>,
+) -> Option<Hotkey> {
     if let Ok(parsed) = s.parse::<Hotkey>() {
         match registry.register_global(manager, action, parsed) {
             Ok(_id) => Some(parsed),
             Err(error) => {
                 let _ = updates_tx.send(WorkerEvent::Error {
                     worker: WorkerKind::Activation,
-                    message: format!("Échec de l'enregistrement du raccourci par défaut '{s}': {error}"),
+                    message: format!(
+                        "Échec de l'enregistrement du raccourci par défaut '{s}': {error}"
+                    ),
                 });
                 None
             }
@@ -209,25 +242,39 @@ fn try_register(manager: &HotkeyManager, s: &str, action: HotkeyAction, registry
     }
 }
 
-fn register_previous_candidates(manager: &HotkeyManager, registry: &mut HotkeyRegistry, updates_tx: &Sender<WorkerEvent>) -> Option<Hotkey> {
+fn register_previous_candidates(
+    manager: &HotkeyManager,
+    registry: &mut HotkeyRegistry,
+    updates_tx: &Sender<WorkerEvent>,
+) -> Option<Hotkey> {
     let previous_candidates = ["²", "`", ","];
     for &cand in &previous_candidates {
-        if let Some(parsed) = try_register(manager, cand, HotkeyAction::Previous, registry, updates_tx) {
+        if let Some(parsed) =
+            try_register(manager, cand, HotkeyAction::Previous, registry, updates_tx)
+        {
             return Some(parsed);
         }
     }
     let _ = updates_tx.send(WorkerEvent::Error {
         worker: WorkerKind::Activation,
-        message: "Échec de l'enregistrement des raccourcis par défaut pour Précédent (essayé : ², `, ,)".to_string(),
+        message:
+            "Échec de l'enregistrement des raccourcis par défaut pour Précédent (essayé : ², `, ,)"
+                .to_string(),
     });
     None
 }
 
-fn handle_next_action(conn: &impl x11rb::connection::Connection, tracker: &mut window::DofusWindowTracker, updates_tx: &Sender<WorkerEvent>) {
+fn handle_next_action(
+    conn: &impl x11rb::connection::Connection,
+    tracker: &mut window::DofusWindowTracker,
+    updates_tx: &Sender<WorkerEvent>,
+) {
     match tracker.refresh(conn) {
         Ok(Some(focused)) => {
             let windows = tracker.windows().to_vec();
-            if windows.is_empty() { return; }
+            if windows.is_empty() {
+                return;
+            }
             if let Some(pos) = windows.iter().position(|w| *w == focused) {
                 let next = windows.get((pos + 1) % windows.len()).copied();
                 if let Some(next_window) = next {
@@ -261,19 +308,31 @@ fn handle_next_action(conn: &impl x11rb::connection::Connection, tracker: &mut w
         Err(error) => {
             let _ = updates_tx.send(WorkerEvent::Error {
                 worker: WorkerKind::Monitor,
-                message: format!("Échec du rafraîchissement des fenêtres pour l'action Suivant: {error:#}"),
+                message: format!(
+                    "Échec du rafraîchissement des fenêtres pour l'action Suivant: {error:#}"
+                ),
             });
         }
     }
 }
 
-fn handle_previous_action(conn: &impl x11rb::connection::Connection, tracker: &mut window::DofusWindowTracker, updates_tx: &Sender<WorkerEvent>) {
+fn handle_previous_action(
+    conn: &impl x11rb::connection::Connection,
+    tracker: &mut window::DofusWindowTracker,
+    updates_tx: &Sender<WorkerEvent>,
+) {
     match tracker.refresh(conn) {
         Ok(Some(focused)) => {
             let windows = tracker.windows().to_vec();
-            if windows.is_empty() { return; }
+            if windows.is_empty() {
+                return;
+            }
             if let Some(pos) = windows.iter().position(|w| *w == focused) {
-                let prev_index = if pos == 0 { windows.len().saturating_sub(1) } else { pos - 1 };
+                let prev_index = if pos == 0 {
+                    windows.len().saturating_sub(1)
+                } else {
+                    pos - 1
+                };
                 if let Some(prev_window) = windows.get(prev_index).copied() {
                     if let Err(error) = window::activation::activate(conn, prev_window) {
                         let _ = updates_tx.send(WorkerEvent::Error {
@@ -305,13 +364,19 @@ fn handle_previous_action(conn: &impl x11rb::connection::Connection, tracker: &m
         Err(error) => {
             let _ = updates_tx.send(WorkerEvent::Error {
                 worker: WorkerKind::Monitor,
-                message: format!("Échec du rafraîchissement des fenêtres pour l'action Précédent: {error:#}"),
+                message: format!(
+                    "Échec du rafraîchissement des fenêtres pour l'action Précédent: {error:#}"
+                ),
             });
         }
     }
 }
 
-fn activate_with_report(conn: &impl x11rb::connection::Connection, window: Window, updates_tx: &Sender<WorkerEvent>) {
+fn activate_with_report(
+    conn: &impl x11rb::connection::Connection,
+    window: Window,
+    updates_tx: &Sender<WorkerEvent>,
+) {
     if let Err(error) = window::activation::activate(conn, window) {
         let _ = updates_tx.send(WorkerEvent::Error {
             worker: WorkerKind::Activation,
@@ -338,7 +403,9 @@ fn handle_assign_shortcut(
         Err(error) => {
             let _ = updates_tx.send(WorkerEvent::Error {
                 worker: WorkerKind::Activation,
-                message: format!("Raccourci invalide '{hotkey}' pour la fenêtre 0x{window:08x} : {error:#}"),
+                message: format!(
+                    "Raccourci invalide '{hotkey}' pour la fenêtre 0x{window:08x} : {error:#}"
+                ),
             });
             return;
         }
@@ -375,7 +442,11 @@ fn handle_assign_global(
         GlobalAction::Previous => HotkeyAction::Previous,
     };
 
-    if hotkey_opt.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+    if hotkey_opt
+        .as_ref()
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true)
+    {
         registry.unregister_global(manager, target_action);
         return None;
     }
@@ -402,7 +473,9 @@ fn handle_assign_global(
         Err(error) => {
             let _ = updates_tx.send(WorkerEvent::Error {
                 worker: WorkerKind::Activation,
-                message: format!("Échec d'enregistrement du raccourci global pour {action:?} : {error}"),
+                message: format!(
+                    "Échec d'enregistrement du raccourci global pour {action:?} : {error}"
+                ),
             });
             None
         }
@@ -431,7 +504,9 @@ fn window_monitor(
         Err(error) => {
             let _ = updates_tx.send(WorkerEvent::Error {
                 worker: WorkerKind::Activation,
-                message: format!("Échec de l'initialisation du gestionnaire de raccourcis globaux : {error:#}"),
+                message: format!(
+                    "Échec de l'initialisation du gestionnaire de raccourcis globaux : {error:#}"
+                ),
             });
             return;
         }
@@ -444,7 +519,13 @@ fn window_monitor(
     let mut last_scan_error = None;
 
     // Register default global shortcuts: Tab -> Next, ² -> Previous
-    _next_hotkey = try_register(&manager, "Tab", HotkeyAction::Next, &mut registry, &updates_tx);
+    _next_hotkey = try_register(
+        &manager,
+        "Tab",
+        HotkeyAction::Next,
+        &mut registry,
+        &updates_tx,
+    );
     _previous_hotkey = register_previous_candidates(&manager, &mut registry, &updates_tx);
 
     loop {
@@ -465,16 +546,26 @@ fn window_monitor(
                 WindowCommand::AssignShortcut { window, hotkey } => {
                     handle_assign_shortcut(&manager, &mut registry, window, hotkey, &updates_tx);
                 }
-                WindowCommand::AssignGlobal { action, hotkey } => {
-                    match action {
-                        GlobalAction::Next => {
-                            _next_hotkey = handle_assign_global(&manager, &mut registry, GlobalAction::Next, hotkey, &updates_tx);
-                        }
-                        GlobalAction::Previous => {
-                            _previous_hotkey = handle_assign_global(&manager, &mut registry, GlobalAction::Previous, hotkey, &updates_tx);
-                        }
+                WindowCommand::AssignGlobal { action, hotkey } => match action {
+                    GlobalAction::Next => {
+                        _next_hotkey = handle_assign_global(
+                            &manager,
+                            &mut registry,
+                            GlobalAction::Next,
+                            hotkey,
+                            &updates_tx,
+                        );
                     }
-                }
+                    GlobalAction::Previous => {
+                        _previous_hotkey = handle_assign_global(
+                            &manager,
+                            &mut registry,
+                            GlobalAction::Previous,
+                            hotkey,
+                            &updates_tx,
+                        );
+                    }
+                },
                 WindowCommand::SetRestrictPrevNextToDofus(value) => {
                     restrict_prev_next_to_dofus = value;
                 }
@@ -505,7 +596,9 @@ fn window_monitor(
                                 Err(error) => {
                                     let _ = updates_tx.send(WorkerEvent::Error {
                                         worker: WorkerKind::Monitor,
-                                        message: format!("Échec de vérification du focus Dofus : {error:#}"),
+                                        message: format!(
+                                            "Échec de vérification du focus Dofus : {error:#}"
+                                        ),
                                     });
                                     continue;
                                 }
@@ -514,26 +607,35 @@ fn window_monitor(
                         match tracker.refresh(&conn) {
                             Ok(Some(focused)) => {
                                 let windows = tracker.windows().to_vec();
-                                if windows.is_empty() { continue; }
+                                if windows.is_empty() {
+                                    continue;
+                                }
                                 if let Some(pos) = windows.iter().position(|w| *w == focused) {
                                     let next = windows.get((pos + 1) % windows.len()).copied();
-                                    if let Some(next_window) = next && let Err(error) = window::activation::activate(&conn, next_window) {
+                                    if let Some(next_window) = next
+                                        && let Err(error) =
+                                            window::activation::activate(&conn, next_window)
+                                    {
                                         let _ = updates_tx.send(WorkerEvent::Error {
                                             worker: WorkerKind::Activation,
                                             message: msg_activate_window(next_window, &error),
                                         });
                                     }
-                                } else if let Some(first) = windows.first().copied() && let Err(error) = window::activation::activate(&conn, first) {
-                                let _ = updates_tx.send(WorkerEvent::Error {
-                                    worker: WorkerKind::Activation,
-                                    message: msg_activate_window(first, &error),
-                                });
+                                } else if let Some(first) = windows.first().copied()
+                                    && let Err(error) = window::activation::activate(&conn, first)
+                                {
+                                    let _ = updates_tx.send(WorkerEvent::Error {
+                                        worker: WorkerKind::Activation,
+                                        message: msg_activate_window(first, &error),
+                                    });
                                 }
                             }
                             Ok(None) => {
                                 // No window currently focused: activate the first detected window (wrap to start)
                                 let windows = tracker.windows().to_vec();
-                                if let Some(first) = windows.first().copied() && let Err(error) = window::activation::activate(&conn, first) {
+                                if let Some(first) = windows.first().copied()
+                                    && let Err(error) = window::activation::activate(&conn, first)
+                                {
                                     let _ = updates_tx.send(WorkerEvent::Error {
                                         worker: WorkerKind::Activation,
                                         message: msg_activate_window(first, &error),
@@ -549,42 +651,55 @@ fn window_monitor(
                         }
                     }
                     HotkeyAction::Previous => {
-                            match tracker.refresh(&conn) {
-                                Ok(Some(focused)) => {
-                                    let windows = tracker.windows().to_vec();
-                                    if windows.is_empty() { continue; }
-                                    if let Some(pos) = windows.iter().position(|w| *w == focused) {
-                                        let prev_index = if pos == 0 { windows.len().saturating_sub(1) } else { pos - 1 };
-                                        if let Some(prev_window) = windows.get(prev_index).copied() && let Err(error) = window::activation::activate(&conn, prev_window) {
-                                            let _ = updates_tx.send(WorkerEvent::Error {
-                                                worker: WorkerKind::Activation,
-                                                message: msg_activate_window(prev_window, &error),
-                                            });
-                                        }
-                                    } else if let Some(last) = windows.last().copied() && let Err(error) = window::activation::activate(&conn, last) {
+                        match tracker.refresh(&conn) {
+                            Ok(Some(focused)) => {
+                                let windows = tracker.windows().to_vec();
+                                if windows.is_empty() {
+                                    continue;
+                                }
+                                if let Some(pos) = windows.iter().position(|w| *w == focused) {
+                                    let prev_index = if pos == 0 {
+                                        windows.len().saturating_sub(1)
+                                    } else {
+                                        pos - 1
+                                    };
+                                    if let Some(prev_window) = windows.get(prev_index).copied()
+                                        && let Err(error) =
+                                            window::activation::activate(&conn, prev_window)
+                                    {
+                                        let _ = updates_tx.send(WorkerEvent::Error {
+                                            worker: WorkerKind::Activation,
+                                            message: msg_activate_window(prev_window, &error),
+                                        });
+                                    }
+                                } else if let Some(last) = windows.last().copied()
+                                    && let Err(error) = window::activation::activate(&conn, last)
+                                {
                                     let _ = updates_tx.send(WorkerEvent::Error {
                                         worker: WorkerKind::Activation,
                                         message: msg_activate_window(last, &error),
                                     });
                                 }
-                                }
-                                Ok(None) => {
-                                    // No window currently focused: activate the last detected window (wrap to end)
-                                    let windows = tracker.windows().to_vec();
-                                    if let Some(last) = windows.last().copied() && let Err(error) = window::activation::activate(&conn, last) {
-                                        let _ = updates_tx.send(WorkerEvent::Error {
-                                            worker: WorkerKind::Activation,
-                                            message: msg_activate_window(last, &error),
-                                        });
-                                    }
-                                }
-                                Err(error) => {
+                            }
+                            Ok(None) => {
+                                // No window currently focused: activate the last detected window (wrap to end)
+                                let windows = tracker.windows().to_vec();
+                                if let Some(last) = windows.last().copied()
+                                    && let Err(error) = window::activation::activate(&conn, last)
+                                {
                                     let _ = updates_tx.send(WorkerEvent::Error {
-                                        worker: WorkerKind::Monitor,
-                                        message: msg_refresh_action_failed("Précédent", &error),
+                                        worker: WorkerKind::Activation,
+                                        message: msg_activate_window(last, &error),
                                     });
                                 }
                             }
+                            Err(error) => {
+                                let _ = updates_tx.send(WorkerEvent::Error {
+                                    worker: WorkerKind::Monitor,
+                                    message: msg_refresh_action_failed("Précédent", &error),
+                                });
+                            }
+                        }
                     }
                     HotkeyAction::Window(_) => { /* handled above */ }
                 }

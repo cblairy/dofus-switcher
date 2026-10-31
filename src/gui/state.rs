@@ -58,7 +58,10 @@ impl WindowListState {
         {
             self.selected_window = None;
         }
-        if self.capture_window.is_some_and(|window| !self.windows.contains(&window)) {
+        if self
+            .capture_window
+            .is_some_and(|window| !self.windows.contains(&window))
+        {
             self.capture_window = None;
         }
         self.apply_persisted_characters();

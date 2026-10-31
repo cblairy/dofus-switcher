@@ -30,7 +30,9 @@ fn default_version() -> u32 {
 }
 
 fn config_path() -> Result<PathBuf> {
-    let dir = dirs::config_dir().context("Dossier de config introuvable")?.join("dofus-switcher");
+    let dir = dirs::config_dir()
+        .context("Dossier de config introuvable")?
+        .join("dofus-switcher");
     Ok(dir.join("config.toml"))
 }
 
@@ -44,7 +46,7 @@ pub(crate) fn load() -> Result<PersistedConfig> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             Ok(PersistedConfig::default())
         }
-        Err(error) => Err(error).with_context(|| format!("Lecture de {}", path.display()))
+        Err(error) => Err(error).with_context(|| format!("Lecture de {}", path.display())),
     }
 }
 
@@ -52,7 +54,8 @@ pub(crate) fn save(config: &PersistedConfig) -> Result<()> {
     let path = config_path()?;
 
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("Création du dossier {}", parent.display()))?;
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Création du dossier {}", parent.display()))?;
     }
 
     let serialized = toml::to_string_pretty(config).context("Serialisation de la config")?;
