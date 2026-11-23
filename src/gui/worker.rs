@@ -30,6 +30,7 @@ pub(super) enum WindowCommand {
         hotkey: Option<String>,
     },
     SetRestrictPrevNextToDofus(bool),
+    SetWindowOrder(Vec<Window>),
 }
 
 pub(super) struct WorkerHandle {
@@ -516,6 +517,7 @@ fn window_monitor(
     let mut _next_hotkey: Option<Hotkey> = None;
     let mut _previous_hotkey: Option<Hotkey> = None;
     let mut tracker = window::DofusWindowTracker::new();
+    let mut window_order: Vec<Window> = Vec::new();
     let mut last_scan_error = None;
 
     // Register default global shortcuts: Tab -> Next, ² -> Previous
@@ -569,6 +571,7 @@ fn window_monitor(
                 WindowCommand::SetRestrictPrevNextToDofus(value) => {
                     restrict_prev_next_to_dofus = value;
                 }
+                WindowCommand::SetWindowOrder(order) => window_order = order,
             }
         }
         while let Some(event) = manager.try_recv() {
@@ -606,7 +609,7 @@ fn window_monitor(
                         }
                         match tracker.refresh(&conn) {
                             Ok(Some(focused)) => {
-                                let windows = tracker.windows().to_vec();
+                                let windows = ordered_windows(tracker.windows(), &window_order);
                                 if windows.is_empty() {
                                     continue;
                                 }
@@ -632,7 +635,7 @@ fn window_monitor(
                             }
                             Ok(None) => {
                                 // No window currently focused: activate the first detected window (wrap to start)
-                                let windows = tracker.windows().to_vec();
+                                let windows = ordered_windows(tracker.windows(), &window_order);
                                 if let Some(first) = windows.first().copied()
                                     && let Err(error) = window::activation::activate(&conn, first)
                                 {
@@ -653,7 +656,7 @@ fn window_monitor(
                     HotkeyAction::Previous => {
                         match tracker.refresh(&conn) {
                             Ok(Some(focused)) => {
-                                let windows = tracker.windows().to_vec();
+                                let windows = ordered_windows(tracker.windows(), &window_order);
                                 if windows.is_empty() {
                                     continue;
                                 }
@@ -683,7 +686,7 @@ fn window_monitor(
                             }
                             Ok(None) => {
                                 // No window currently focused: activate the last detected window (wrap to end)
-                                let windows = tracker.windows().to_vec();
+                                let windows = ordered_windows(tracker.windows(), &window_order);
                                 if let Some(last) = windows.last().copied()
                                     && let Err(error) = window::activation::activate(&conn, last)
                                 {
@@ -744,4 +747,18 @@ fn window_monitor(
 
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+fn ordered_windows(detected: &[Window], preferred: &[Window]) -> Vec<Window> {
+    let mut ordered: Vec<Window> = preferred
+        .iter()
+        .copied()
+        .filter(|w| detected.contains(w))
+        .collect();
+    for window in detected {
+        if !ordered.contains(window) {
+            ordered.push(*window);
+        }
+    }
+    ordered
 }

@@ -10,6 +10,9 @@ pub(crate) struct PersistedConfig {
     pub(crate) version: u32,
     #[serde(default)]
     pub(crate) characters: Vec<CharacterConfig>,
+    /// Order as indices into the freshly detected window list.
+    #[serde(default)]
+    pub(crate) window_order: Vec<usize>,
     #[serde(default)]
     pub(crate) next_key: Option<String>,
     #[serde(default)]
@@ -26,7 +29,7 @@ pub(crate) struct CharacterConfig {
 }
 
 fn default_version() -> u32 {
-    1
+    2
 }
 
 fn config_path() -> Result<PathBuf> {

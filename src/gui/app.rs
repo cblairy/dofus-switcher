@@ -13,10 +13,37 @@ use crate::runtime::{WorkerEvent, WorkerKind};
 pub(crate) fn run() -> eframe::Result<()> {
     let worker = WorkerHandle::start();
     eframe::run_native(
-        "Detected Dofus windows",
+        "Dofus Switcher",
         eframe::NativeOptions::default(),
-        Box::new(move |_creation_context| Ok(Box::new(WindowListApp::new(worker)))),
+        Box::new(move |creation_context| {
+            let mut fonts = egui::FontDefinitions::default();
+            fonts.font_data.insert(
+                "arrow_icons".to_owned(),
+                egui::FontData::from_static(include_bytes!(
+                    "../../assets/fonts/NotoSansSymbols-Arrows.ttf"
+                ))
+                .into(),
+            );
+            fonts.families.insert(
+                egui::FontFamily::Name("arrow_icons".into()),
+                vec!["arrow_icons".to_owned()],
+            );
+            creation_context.egui_ctx.set_fonts(fonts);
+            Ok(Box::new(WindowListApp::new(worker)))
+        }),
     )
+}
+
+fn arrow_button(ui: &mut egui::Ui, up: bool, enabled: bool) -> bool {
+    let response =
+        ui.add_enabled(
+            enabled,
+            egui::Button::new(egui::RichText::new(if up { "↑" } else { "↓" }).font(
+                egui::FontId::new(14.0, egui::FontFamily::Name("arrow_icons".into())),
+            ))
+            .min_size(egui::vec2(22.0, 0.0)),
+        );
+    response.clicked()
 }
 
 struct WindowListApp {
@@ -59,6 +86,7 @@ impl WindowListApp {
             }
             state.restrict_prev_next_to_dofus = config.restrict_prev_next_to_dofus;
             state.persisted_characters = config.characters;
+            state.persisted_order = config.window_order;
 
             if let Some(hotkey) = state.next_key.clone() {
                 let _ = commands_tx.send(super::worker::WindowCommand::AssignGlobal {
@@ -127,6 +155,11 @@ impl WindowListApp {
                     focused_window,
                 } => {
                     self.state.apply_windows(windows, focused_window);
+                    let _ = self
+                        .commands_tx
+                        .send(super::worker::WindowCommand::SetWindowOrder(
+                            self.state.windows.clone(),
+                        ));
                     self.sync_window_shortcuts();
                     self.state.errors.remove(&WorkerKind::Monitor);
                 }
@@ -218,36 +251,36 @@ impl WindowListApp {
     fn persist_config(&self) {
         let characters = self
             .state
-            .windows
+            .detected_windows
             .iter()
-            .enumerate()
-            .filter_map(|(index, window)| {
+            .map(|window| {
                 let name = self
                     .state
                     .character_names
                     .get(window)
                     .cloned()
                     .unwrap_or_default();
-                if name.trim().is_empty()
-                    && self
-                        .state
-                        .persisted_characters
-                        .get(index)
-                        .map(|entry| entry.name.trim().is_empty())
-                        .unwrap_or(true)
-                {
-                    return None;
-                }
-                Some(crate::config::CharacterConfig {
+                crate::config::CharacterConfig {
                     name: name.trim().to_owned(),
                     shortcut: self.state.shortcut_keys.get(window).cloned(),
-                })
+                }
             })
             .collect();
 
         let config = crate::config::PersistedConfig {
-            version: 1,
+            version: 2,
             characters,
+            window_order: self
+                .state
+                .windows
+                .iter()
+                .filter_map(|window| {
+                    self.state
+                        .detected_windows
+                        .iter()
+                        .position(|candidate| candidate == window)
+                })
+                .collect(),
             next_key: self.state.next_key.clone(),
             previous_key: self.state.previous_key.clone(),
             restrict_prev_next_to_dofus: self.state.restrict_prev_next_to_dofus,
@@ -365,6 +398,22 @@ impl eframe::App for WindowListApp {
                         if ui.button(button_label).clicked() {
                             self.state.capture_window = Some(window);
                         }
+                    }
+                    if arrow_button(ui, true, index > 0) {
+                        self.state.move_window(window, -1);
+                        let _ =
+                            self.commands_tx
+                                .send(super::worker::WindowCommand::SetWindowOrder(
+                                    self.state.windows.clone(),
+                                ));
+                    }
+                    if arrow_button(ui, false, index + 1 < self.state.windows.len()) {
+                        self.state.move_window(window, 1);
+                        let _ =
+                            self.commands_tx
+                                .send(super::worker::WindowCommand::SetWindowOrder(
+                                    self.state.windows.clone(),
+                                ));
                     }
                 });
             }

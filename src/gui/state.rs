@@ -11,6 +11,7 @@ pub(super) enum GlobalAction {
 
 pub(super) struct WindowListState {
     pub(super) windows: Vec<Window>,
+    pub(super) detected_windows: Vec<Window>,
     pub(super) focused_window: Option<Window>,
     pub(super) selected_window: Option<Window>,
     pub(super) character_names: HashMap<Window, String>,
@@ -22,12 +23,15 @@ pub(super) struct WindowListState {
     pub(super) errors: HashMap<crate::runtime::WorkerKind, String>,
     pub(super) restrict_prev_next_to_dofus: bool,
     pub(super) persisted_characters: Vec<crate::config::CharacterConfig>,
+    pub(super) persisted_order: Vec<usize>,
+    pub(super) initial_order_applied: bool,
 }
 
 impl Default for WindowListState {
     fn default() -> Self {
         Self {
             windows: Vec::new(),
+            detected_windows: Vec::new(),
             focused_window: None,
             selected_window: None,
             character_names: HashMap::new(),
@@ -40,27 +44,30 @@ impl Default for WindowListState {
             errors: HashMap::new(),
             restrict_prev_next_to_dofus: true,
             persisted_characters: Vec::new(),
+            persisted_order: Vec::new(),
+            initial_order_applied: false,
         }
     }
 }
 
 impl WindowListState {
     pub(super) fn apply_windows(&mut self, windows: Vec<Window>, focused_window: Option<Window>) {
-        self.windows = windows;
+        self.detected_windows = windows;
+        self.reconcile_order();
         self.focused_window = focused_window;
         self.character_names
-            .retain(|window, _| self.windows.contains(window));
+            .retain(|window, _| self.detected_windows.contains(window));
         self.shortcut_keys
-            .retain(|window, _| self.windows.contains(window));
+            .retain(|window, _| self.detected_windows.contains(window));
         if self
             .selected_window
-            .is_some_and(|window| !self.windows.contains(&window))
+            .is_some_and(|window| !self.detected_windows.contains(&window))
         {
             self.selected_window = None;
         }
         if self
             .capture_window
-            .is_some_and(|window| !self.windows.contains(&window))
+            .is_some_and(|window| !self.detected_windows.contains(&window))
         {
             self.capture_window = None;
         }
@@ -72,7 +79,7 @@ impl WindowListState {
             return;
         }
 
-        for (index, window) in self.windows.iter().enumerate() {
+        for (index, window) in self.detected_windows.iter().enumerate() {
             if let Some(entry) = self.persisted_characters.get(index) {
                 if !entry.name.trim().is_empty() {
                     self.character_names.insert(*window, entry.name.clone());
@@ -82,6 +89,50 @@ impl WindowListState {
                 }
             }
         }
+        self.persisted_characters.clear();
+    }
+
+    fn reconcile_order(&mut self) {
+        self.windows
+            .retain(|window| self.detected_windows.contains(window));
+        for window in &self.detected_windows {
+            if !self.windows.contains(window) {
+                self.windows.push(*window);
+            }
+        }
+        if !self.initial_order_applied {
+            let current = self.windows.clone();
+            let mut ordered = Vec::new();
+            for index in &self.persisted_order {
+                if let Some(window) = current.get(*index) {
+                    if !ordered.contains(window) {
+                        ordered.push(*window);
+                    }
+                }
+            }
+            for window in current {
+                if !ordered.contains(&window) {
+                    ordered.push(window);
+                }
+            }
+            self.windows = ordered;
+            self.initial_order_applied = true;
+        }
+    }
+
+    pub(super) fn move_window(&mut self, window: Window, offset: isize) {
+        let Some(index) = self
+            .windows
+            .iter()
+            .position(|candidate| *candidate == window)
+        else {
+            return;
+        };
+        let target = index as isize + offset;
+        if !(0..self.windows.len() as isize).contains(&target) {
+            return;
+        }
+        self.windows.swap(index, target as usize);
     }
 
     pub(super) fn assign_shortcut(&mut self, window: Window, key: Option<String>) {
@@ -122,6 +173,9 @@ mod tests {
             errors: HashMap::new(),
             restrict_prev_next_to_dofus: true,
             persisted_characters: Vec::new(),
+            persisted_order: Vec::new(),
+            initial_order_applied: false,
+            detected_windows: vec![1, 2],
         };
         state.apply_windows(vec![1, 3], Some(3));
 
@@ -150,6 +204,9 @@ mod tests {
             errors: HashMap::new(),
             restrict_prev_next_to_dofus: true,
             persisted_characters: Vec::new(),
+            detected_windows: vec![1, 2],
+            persisted_order: Vec::new(),
+            initial_order_applied: false,
         };
         state.apply_windows(vec![2, 1], Some(1));
 
@@ -176,6 +233,9 @@ mod tests {
             character_names: HashMap::new(),
             restrict_prev_next_to_dofus: true,
             persisted_characters: Vec::new(),
+            detected_windows: Vec::new(),
+            persisted_order: Vec::new(),
+            initial_order_applied: false,
         };
 
         state.assign_shortcut(2, Some("1".to_owned()));
