@@ -231,8 +231,24 @@ impl WindowListApp {
                 state.previous_key = config.previous_key.clone();
             }
             state.restrict_prev_next_to_dofus = config.restrict_prev_next_to_dofus;
-            state.persisted_characters = config.characters;
-            state.persisted_order = config.window_order;
+            // The old config stored characters in discovery order and initiative
+            // separately. Reorder that roster once, then use names as identities.
+            let mut characters = config.characters;
+            let mut ordered_characters = Vec::with_capacity(characters.len());
+            for index in config.window_order {
+                if index < characters.len() {
+                    ordered_characters.push(characters[index].clone());
+                }
+            }
+            for character in characters.drain(..) {
+                if !ordered_characters
+                    .iter()
+                    .any(|entry| entry.name == character.name)
+                {
+                    ordered_characters.push(character);
+                }
+            }
+            state.persisted_characters = discard_incremental_name_fragments(ordered_characters);
 
             if let Some(hotkey) = state.next_key.clone() {
                 let _ = commands_tx.send(super::worker::WindowCommand::AssignGlobal {
@@ -292,6 +308,24 @@ impl WindowListApp {
 
         self.registered_shortcuts
             .retain(|window| self.state.windows.contains(window));
+    }
+
+    fn refresh_window_assignments(&mut self) {
+        self.registered_shortcuts.clear();
+        for &window in &self.state.detected_windows {
+            let hotkey = self.state.shortcut_keys.get(&window).cloned();
+            if hotkey.is_some() {
+                self.registered_shortcuts.insert(window);
+            }
+            let _ = self
+                .commands_tx
+                .send(super::worker::WindowCommand::AssignShortcut { window, hotkey });
+        }
+        let _ = self
+            .commands_tx
+            .send(super::worker::WindowCommand::SetWindowOrder(
+                self.state.windows.clone(),
+            ));
     }
 
     fn receive_worker_events(&mut self) {
@@ -396,38 +430,10 @@ impl WindowListApp {
     }
 
     fn persist_config(&self) {
-        let characters = self
-            .state
-            .detected_windows
-            .iter()
-            .map(|window| {
-                let name = self
-                    .state
-                    .character_names
-                    .get(window)
-                    .cloned()
-                    .unwrap_or_default();
-                crate::config::CharacterConfig {
-                    name: name.trim().to_owned(),
-                    shortcut: self.state.shortcut_keys.get(window).cloned(),
-                }
-            })
-            .collect();
-
         let config = crate::config::PersistedConfig {
-            version: 2,
-            characters,
-            window_order: self
-                .state
-                .windows
-                .iter()
-                .filter_map(|window| {
-                    self.state
-                        .detected_windows
-                        .iter()
-                        .position(|candidate| candidate == window)
-                })
-                .collect(),
+            version: 3,
+            characters: self.state.persisted_characters.clone(),
+            window_order: Vec::new(),
             next_key: self.state.next_key.clone(),
             previous_key: self.state.previous_key.clone(),
             restrict_prev_next_to_dofus: self.state.restrict_prev_next_to_dofus,
@@ -437,6 +443,37 @@ impl WindowListApp {
             eprintln!("[config] Echec de la sauvegarde : {error:#}");
         }
     }
+}
+
+fn discard_incremental_name_fragments(
+    characters: Vec<crate::config::CharacterConfig>,
+) -> Vec<crate::config::CharacterConfig> {
+    let mut fragments = HashSet::new();
+    for complete_name in characters
+        .iter()
+        .filter(|character| character.shortcut.is_none())
+    {
+        let complete = complete_name.name.to_lowercase();
+        let prefixes: Vec<_> = characters
+            .iter()
+            .filter(|character| {
+                character.shortcut.is_none()
+                    && character.name.chars().count() >= 2
+                    && character.name.chars().count() < complete_name.name.chars().count()
+                    && complete.starts_with(&character.name.to_lowercase())
+            })
+            .collect();
+        // Older builds saved every intermediate value while the user typed.
+        // Only remove a clear chain of at least three such prefixes; retain
+        // shorter legitimate character names and anything with a shortcut.
+        if prefixes.len() >= 3 {
+            fragments.extend(prefixes.into_iter().map(|character| character.name.clone()));
+        }
+    }
+    characters
+        .into_iter()
+        .filter(|character| !fragments.contains(&character.name))
+        .collect()
 }
 
 impl eframe::App for WindowListApp {
@@ -725,6 +762,27 @@ impl eframe::App for WindowListApp {
                                                 .color(egui::Color32::from_rgb(202, 167, 104)),
                                         );
                                         ui.separator();
+                                        let unassigned = self
+                                            .state
+                                            .windows
+                                            .iter()
+                                            .filter(|window| {
+                                                self.state
+                                                    .character_names
+                                                    .get(window)
+                                                    .is_none_or(|name| name.trim().is_empty())
+                                            })
+                                            .count();
+                                        if unassigned > 0 {
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "{unassigned} À ASSOCIER"
+                                                ))
+                                                .size(10.0)
+                                                .strong()
+                                                .color(egui::Color32::from_rgb(213, 168, 94)),
+                                            );
+                                        }
                                         if let Some(window) = self.state.focused_window {
                                             ui.label(
                                                 egui::RichText::new(format!(
@@ -743,6 +801,119 @@ impl eframe::App for WindowListApp {
                                         }
                                     });
                                     let windows = self.state.windows.clone();
+                                    let saved_characters = self.state.persisted_characters.clone();
+                                    if let Some(window) = self.state.association_window {
+                                        let mut selected_character = None;
+                                        let mut create_name = None;
+                                        egui::Frame::new()
+                                            .fill(egui::Color32::from_rgb(34, 29, 40))
+                                            .stroke(egui::Stroke::new(
+                                                1.0,
+                                                egui::Color32::from_rgb(111, 85, 55),
+                                            ))
+                                            .corner_radius(egui::CornerRadius::same(8))
+                                            .inner_margin(egui::Margin::symmetric(10, 8))
+                                            .show(ui, |ui| {
+                                                ui.set_min_width(ui.available_width());
+                                                ui.horizontal(|ui| {
+                                                    ui.label(
+                                                        egui::RichText::new("ASSOCIER UN PERSONNAGE")
+                                                            .size(10.0)
+                                                            .strong()
+                                                            .color(egui::Color32::from_rgb(213, 177, 112)),
+                                                    );
+                                                            let position = self
+                                                                .state
+                                                                .windows
+                                                                .iter()
+                                                                .position(|candidate| *candidate == window)
+                                                                .unwrap_or(0)
+                                                                + 1;
+                                                            ui.label(
+                                                                egui::RichText::new(format!(
+                                                                    "pour le compte {position:02}"
+                                                                ))
+                                                                .size(10.0)
+                                                                .color(egui::Color32::from_rgb(166, 157, 174)),
+                                                            );
+                                                    ui.with_layout(
+                                                        egui::Layout::right_to_left(egui::Align::Center),
+                                                        |ui| {
+                                                            if ui.small_button("Annuler").clicked() {
+                                                                self.state.association_window = None;
+                                                                self.state.association_query.clear();
+                                                            }
+                                                        },
+                                                    );
+                                                });
+                                                ui.label(
+                                                    egui::RichText::new(
+                                                        "Choisis un personnage enregistré ou crée un nouveau nom.",
+                                                    )
+                                                    .size(10.0)
+                                                    .color(egui::Color32::from_rgb(166, 157, 174)),
+                                                );
+                                                ui.add(
+                                                    egui::TextEdit::singleline(
+                                                        &mut self.state.association_query,
+                                                    )
+                                                    .desired_width(ui.available_width())
+                                                    .hint_text("Rechercher ou saisir un nom"),
+                                                );
+
+                                                let query = self.state.association_query.trim().to_lowercase();
+                                                let matches: Vec<_> = saved_characters
+                                                    .iter()
+                                                    .filter(|character| {
+                                                        query.is_empty()
+                                                            || character.name.to_lowercase().contains(&query)
+                                                    })
+                                                    .collect();
+                                                if matches.is_empty() {
+                                                    ui.label(
+                                                        egui::RichText::new("Aucun personnage enregistré ne correspond.")
+                                                            .size(10.0)
+                                                            .color(egui::Color32::from_rgb(166, 157, 174)),
+                                                    );
+                                                } else {
+                                                    egui::ScrollArea::vertical()
+                                                        .max_height(96.0)
+                                                        .show(ui, |ui| {
+                                                            ui.horizontal_wrapped(|ui| {
+                                                                for character in matches {
+                                                                    if ui.button(&character.name).clicked() {
+                                                                        selected_character = Some(character.name.clone());
+                                                                    }
+                                                                }
+                                                            });
+                                                        });
+                                                }
+
+                                                let query = self.state.association_query.trim();
+                                                if !query.is_empty()
+                                                    && !saved_characters.iter().any(|character| {
+                                                        character.name.eq_ignore_ascii_case(query)
+                                                    })
+                                                {
+                                                    if ui.button(format!("Créer « {query} » et associer")).clicked() {
+                                                        create_name = Some(query.to_owned());
+                                                    }
+                                                }
+                                            });
+
+                                        if let Some(name) = selected_character {
+                                            self.state.assign_character(window, name);
+                                            self.state.association_window = None;
+                                            self.state.association_query.clear();
+                                            self.refresh_window_assignments();
+                                        } else if let Some(name) = create_name {
+                                            self.state.create_character(window, name);
+                                            self.state.association_window = None;
+                                            self.state.association_query.clear();
+                                            self.refresh_window_assignments();
+                                        }
+                                        ui.add_space(6.0);
+                                    }
                                     for (index, window) in windows.into_iter().enumerate() {
                                         let focused = self.state.focused_window == Some(window);
                                         let row_fill = if focused {
@@ -800,28 +971,31 @@ impl eframe::App for WindowListApp {
                                                             132, 124, 143,
                                                         )),
                                                     );
-                                                    let reserved_width = if self
+                                                    let character_name = self
                                                         .state
-                                                        .capture_window
-                                                        == Some(window)
-                                                    {
-                                                        288.0
-                                                    } else {
-                                                        176.0
-                                                    };
-                                                    let name_width = (ui.available_width()
-                                                        - reserved_width)
-                                                        .max(140.0);
+                                                        .character_names
+                                                        .get(&window)
+                                                        .filter(|name| !name.trim().is_empty())
+                                                        .map(String::as_str)
+                                                        .unwrap_or("Aucun personnage lié");
                                                     ui.add(
-                                                        egui::TextEdit::singleline(
-                                                            self.state
-                                                                .character_names
-                                                                .entry(window)
-                                                                .or_default(),
-                                                        )
-                                                        .desired_width(name_width)
-                                                        .hint_text("Nom du personnage"),
+                                                        egui::Label::new(egui::RichText::new(character_name)
+                                                            .color(if character_name == "Aucun personnage lié" {
+                                                                egui::Color32::from_rgb(153, 145, 161)
+                                                            } else {
+                                                                egui::Color32::from_rgb(239, 231, 216)
+                                                            }))
+                                                        .truncate(),
                                                     );
+                                                    if ui.button(if character_name == "Aucun personnage lié" {
+                                                        "Associer…"
+                                                    } else {
+                                                        "Changer"
+                                                    }).clicked() {
+                                                        self.state.association_window = Some(window);
+                                                        self.state.association_query.clear();
+                                                        self.state.selected_window = Some(window);
+                                                    }
 
                                                     if self.state.capture_window == Some(window) {
                                                         if ui
@@ -900,6 +1074,7 @@ impl eframe::App for WindowListApp {
                         egui::Stroke::new(1.0, grip_color),
                     );
                 }
+                self.state.sync_character_profiles();
                 self.persist_config();
             });
         ui.ctx().request_repaint_after(Duration::from_millis(100));

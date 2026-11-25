@@ -9,8 +9,9 @@ pub(crate) struct PersistedConfig {
     #[serde(default = "default_version")]
     pub(crate) version: u32,
     #[serde(default)]
+    /// Saved character roster, stored in initiative order.
     pub(crate) characters: Vec<CharacterConfig>,
-    /// Order as indices into the freshly detected window list.
+    /// Legacy order as indices into the old discovery list (version 2 configs).
     #[serde(default)]
     pub(crate) window_order: Vec<usize>,
     #[serde(default)]
@@ -23,13 +24,14 @@ pub(crate) struct PersistedConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CharacterConfig {
+    /// Stable user identity; window IDs are only associated for the current session.
     pub(crate) name: String,
     #[serde(default)]
     pub(crate) shortcut: Option<String>,
 }
 
 fn default_version() -> u32 {
-    2
+    3
 }
 
 fn config_path() -> Result<PathBuf> {
