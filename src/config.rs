@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PersistedConfig {
     #[serde(default = "default_version")]
     pub(crate) version: u32,
@@ -28,7 +28,7 @@ pub(crate) struct PersistedConfig {
     pub(crate) restrict_prev_next_to_dofus: bool,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub(crate) struct OcrRegion {
     /// Region bounds normalized to the client area of a Dofus window.
     pub(crate) x: f32,
@@ -37,7 +37,7 @@ pub(crate) struct OcrRegion {
     pub(crate) height: f32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct CharacterConfig {
     /// Stable user identity; window IDs are only associated for the current session.
     pub(crate) name: String,
@@ -45,7 +45,7 @@ pub(crate) struct CharacterConfig {
     pub(crate) shortcut: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct WindowAssignment {
     /// X11 window ID, stable while the Dofus window remains open.
     pub(crate) window: u32,
@@ -86,8 +86,25 @@ pub(crate) fn save(config: &PersistedConfig) -> Result<()> {
     }
 
     let serialized = toml::to_string_pretty(config).context("Serialisation de la config")?;
+    let file_name = path
+        .file_name()
+        .context("Nom de fichier de configuration invalide")?
+        .to_string_lossy();
+    let temporary_path = path.with_file_name(format!("{file_name}.tmp-{}", std::process::id()));
 
-    fs::write(&path, serialized).with_context(|| format!("Ecriture de {}", path.display()))
+    fs::write(&temporary_path, serialized)
+        .with_context(|| format!("Ecriture de {}", temporary_path.display()))?;
+    if let Err(error) = fs::rename(&temporary_path, &path) {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(error).with_context(|| {
+            format!(
+                "Remplacement atomique de {} par {}",
+                path.display(),
+                temporary_path.display()
+            )
+        });
+    }
+    Ok(())
 }
 
 pub(crate) fn save_ocr_region(region: Option<OcrRegion>) -> Result<()> {

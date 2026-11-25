@@ -203,6 +203,7 @@ struct WindowListApp {
     overlay_rx: mpsc::Receiver<OcrOverlayEvent>,
     ocr_calibration: Option<OcrCalibration>,
     last_auto_sized_window_count: Option<usize>,
+    last_saved_config: Option<crate::config::PersistedConfig>,
 }
 
 #[derive(Clone)]
@@ -322,7 +323,7 @@ impl WindowListApp {
 
         worker.set_ocr_region(state.ocr_region);
 
-        Self {
+        let mut app = Self {
             worker,
             app_icon,
             commands_tx,
@@ -333,7 +334,11 @@ impl WindowListApp {
             overlay_rx,
             ocr_calibration: None,
             last_auto_sized_window_count: None,
-        }
+            last_saved_config: None,
+        };
+        app.state.sync_character_profiles();
+        app.last_saved_config = Some(app.persisted_config());
+        app
     }
 
     fn begin_ocr_calibration(&mut self, ctx: &egui::Context) -> bool {
@@ -625,29 +630,40 @@ impl WindowListApp {
         }
     }
 
-    fn persist_config(&self) {
-        let config = crate::config::PersistedConfig {
+    fn persisted_config(&self) -> crate::config::PersistedConfig {
+        let mut window_assignments: Vec<_> = self
+            .state
+            .saved_window_assignments
+            .iter()
+            .map(|(window, character)| crate::config::WindowAssignment {
+                window: *window,
+                character: character.clone(),
+            })
+            .collect();
+        window_assignments.sort_by_key(|assignment| assignment.window);
+
+        crate::config::PersistedConfig {
             version: 6,
             characters: self.state.persisted_characters.clone(),
             ocr_region: self.state.ocr_region,
-            window_assignments: self
-                .state
-                .saved_window_assignments
-                .iter()
-                .map(|(window, character)| crate::config::WindowAssignment {
-                    window: *window,
-                    character: character.clone(),
-                })
-                .collect(),
+            window_assignments,
             initiative_order: self.state.initiative_order.clone(),
             window_order: Vec::new(),
             next_key: self.state.next_key.clone(),
             previous_key: self.state.previous_key.clone(),
             restrict_prev_next_to_dofus: self.state.restrict_prev_next_to_dofus,
-        };
+        }
+    }
 
-        if let Err(error) = crate::config::save(&config) {
-            eprintln!("[config] Echec de la sauvegarde : {error:#}");
+    fn persist_config(&mut self) {
+        let config = self.persisted_config();
+        if self.last_saved_config.as_ref() == Some(&config) {
+            return;
+        }
+
+        match crate::config::save(&config) {
+            Ok(()) => self.last_saved_config = Some(config),
+            Err(error) => eprintln!("[config] Echec de la sauvegarde : {error:#}"),
         }
     }
 }
