@@ -16,7 +16,7 @@ impl WindowListApp {
         window_assignments.sort_by_key(|assignment| assignment.window);
 
         crate::config::PersistedConfig {
-            version: 6,
+            version: crate::config::CURRENT_VERSION,
             characters: self.state.persisted_characters.clone(),
             ocr_region: self.state.ocr_region,
             window_assignments,
@@ -35,8 +35,13 @@ impl WindowListApp {
         }
 
         match crate::config::save(&config) {
-            Ok(()) => self.last_saved_config = Some(config),
-            Err(error) => eprintln!("[config] Echec de la sauvegarde : {error:#}"),
+            Ok(()) => {
+                self.last_saved_config = Some(config);
+                self.state.config_error = None;
+            }
+            Err(error) => {
+                self.state.config_error = Some(format!("Sauvegarde impossible : {error:#}"));
+            }
         }
     }
 }

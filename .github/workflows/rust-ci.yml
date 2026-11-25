@@ -1,0 +1,32 @@
+name: Rust CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust: ["1.95.0", stable]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: rustfmt, clippy
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libgl1-mesa-dev libx11-dev libxcb1-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxi-dev
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Compile
+        run: cargo check --locked
+      - name: Run Clippy
+        run: cargo clippy --locked --bin dofus-switcher -- -D warnings
+      - name: Enforce Rust file length
+        run: sh scripts/check-rust-file-lengths.sh

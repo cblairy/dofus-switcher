@@ -1,12 +1,14 @@
 use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) const CURRENT_VERSION: u32 = 6;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PersistedConfig {
-    #[serde(default = "default_version")]
+    #[serde(default = "initial_version")]
     pub(crate) version: u32,
     #[serde(default)]
     /// Saved character roster, stored in initiative order.
@@ -26,6 +28,22 @@ pub(crate) struct PersistedConfig {
     pub(crate) previous_key: Option<String>,
     #[serde(default)]
     pub(crate) restrict_prev_next_to_dofus: bool,
+}
+
+impl Default for PersistedConfig {
+    fn default() -> Self {
+        Self {
+            version: CURRENT_VERSION,
+            characters: Vec::new(),
+            ocr_region: None,
+            window_assignments: Vec::new(),
+            initiative_order: Vec::new(),
+            window_order: Vec::new(),
+            next_key: None,
+            previous_key: None,
+            restrict_prev_next_to_dofus: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -52,8 +70,8 @@ pub(crate) struct WindowAssignment {
     pub(crate) character: String,
 }
 
-fn default_version() -> u32 {
-    6
+fn initial_version() -> u32 {
+    1
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -68,7 +86,13 @@ pub(crate) fn load() -> Result<PersistedConfig> {
 
     match fs::read_to_string(&path) {
         Ok(contents) => {
-            toml::from_str(&contents).with_context(|| format!("Parsing {}", path.display()))
+            let mut config: PersistedConfig =
+                toml::from_str(&contents).with_context(|| format!("Parsing {}", path.display()))?;
+            let migrated = migrate(&mut config)?;
+            if migrated && let Err(error) = save(&config) {
+                eprintln!("[config] Migration chargée mais sauvegarde impossible : {error:#}");
+            }
+            Ok(config)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             Ok(PersistedConfig::default())
@@ -77,8 +101,49 @@ pub(crate) fn load() -> Result<PersistedConfig> {
     }
 }
 
+fn migrate(config: &mut PersistedConfig) -> Result<bool> {
+    if config.version > CURRENT_VERSION {
+        bail!(
+            "La configuration utilise la version {} ; cette application ne prend en charge que la version {}.",
+            config.version,
+            CURRENT_VERSION
+        );
+    }
+
+    if config.version == 0 {
+        config.version = 1;
+    }
+    let original_version = config.version;
+
+    // Version 2 introduced window_order; keep it so startup can restore legacy lists.
+    // Version 3 introduced stable window assignments.
+    if config.version < 3 {
+        config.window_assignments.clear();
+    }
+    // Version 4 introduced the saved OCR capture region.
+    if config.version < 4 {
+        config.ocr_region = None;
+    }
+    // Version 6 stores ordering by character name instead of window index.
+    if (3..6).contains(&config.version) && config.initiative_order.is_empty() {
+        config.initiative_order = config
+            .characters
+            .iter()
+            .map(|character| character.name.clone())
+            .collect();
+    }
+
+    config.version = CURRENT_VERSION;
+    Ok(original_version < CURRENT_VERSION)
+}
+
 pub(crate) fn save(config: &PersistedConfig) -> Result<()> {
     let path = config_path()?;
+
+    if config.version != CURRENT_VERSION {
+        bail!("Refus d’enregistrer une configuration qui n’est pas à jour.");
+    }
+    reject_newer_config(&path)?;
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -103,6 +168,26 @@ pub(crate) fn save(config: &PersistedConfig) -> Result<()> {
                 temporary_path.display()
             )
         });
+    }
+    Ok(())
+}
+
+fn reject_newer_config(path: &std::path::Path) -> Result<()> {
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).with_context(|| format!("Lecture de {}", path.display())),
+    };
+    let value: toml::Value =
+        toml::from_str(&contents).with_context(|| format!("Parsing {}", path.display()))?;
+    let version = value
+        .get("version")
+        .and_then(toml::Value::as_integer)
+        .unwrap_or(1);
+    if version > i64::from(CURRENT_VERSION) {
+        bail!(
+            "Refus d’écraser la configuration version {version} avec la version {CURRENT_VERSION}."
+        );
     }
     Ok(())
 }

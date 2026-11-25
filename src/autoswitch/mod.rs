@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use ocrs::{OcrEngine, OcrEngineParams};
 use rten::Model;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::Duration;
 use x11rb::errors::ReplyError;
 use x11rb::rust_connection::RustConnection;
@@ -28,7 +28,7 @@ pub(crate) fn auto_switch(
     let mut last_ocr_error = None;
 
     loop {
-        if stop_rx.try_recv().is_ok() {
+        if matches!(stop_rx.try_recv(), Ok(()) | Err(TryRecvError::Disconnected)) {
             return Ok(());
         }
         while let Ok(next_region) = settings_rx.try_recv() {
@@ -37,7 +37,9 @@ pub(crate) fn auto_switch(
 
         let Some(region) = region else {
             report_error_recovered(&mut last_ocr_error, &events_tx);
-            std::thread::sleep(Duration::from_millis(100));
+            if wait_for_stop(&stop_rx, Duration::from_millis(100)) {
+                return Ok(());
+            }
             continue;
         };
         if engine.is_none() {
@@ -52,7 +54,9 @@ pub(crate) fn auto_switch(
                         format!("Initialisation OCR impossible : {error:#}"),
                         &events_tx,
                     )?;
-                    std::thread::sleep(Duration::from_secs(2));
+                    if wait_for_stop(&stop_rx, Duration::from_secs(2)) {
+                        return Ok(());
+                    }
                     continue;
                 }
             }
@@ -95,8 +99,17 @@ pub(crate) fn auto_switch(
             )?,
         }
 
-        std::thread::sleep(OCR_INTERVAL);
+        if wait_for_stop(&stop_rx, OCR_INTERVAL) {
+            return Ok(());
+        }
     }
+}
+
+fn wait_for_stop(stop_rx: &Receiver<()>, timeout: Duration) -> bool {
+    !matches!(
+        stop_rx.recv_timeout(timeout),
+        Err(RecvTimeoutError::Timeout)
+    )
 }
 
 fn report_worker_error(
