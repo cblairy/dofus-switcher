@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use ocrs::{OcrEngine, OcrEngineParams};
 use rten::Model;
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 use x11rb::errors::ReplyError;
 use x11rb::rust_connection::RustConnection;
@@ -31,11 +31,8 @@ pub(crate) fn auto_switch(
         if stop_rx.try_recv().is_ok() {
             return Ok(());
         }
-        loop {
-            match settings_rx.try_recv() {
-                Ok(next_region) => region = next_region,
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-            }
+        while let Ok(next_region) = settings_rx.try_recv() {
+            region = next_region;
         }
 
         let Some(region) = region else {

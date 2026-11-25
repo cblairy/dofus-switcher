@@ -73,24 +73,27 @@ fn levenshtein(a: &str, b: &str) -> usize {
     }
 
     let mut d = vec![vec![0usize; bl + 1]; al + 1];
-    for i in 0..=al {
-        d[i][0] = i;
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
     }
-    for j in 0..=bl {
-        d[0][j] = j;
+    for (j, cell) in d[0].iter_mut().enumerate() {
+        *cell = j;
     }
 
     for i in 1..=al {
+        let (previous_rows, current_rows) = d.split_at_mut(i);
+        let previous = &previous_rows[i - 1];
+        let current = &mut current_rows[0];
         for j in 1..=bl {
             let cost = if a_chars[i - 1] == b_chars[j - 1] {
                 0
             } else {
                 1
             };
-            d[i][j] = *[
-                d[i - 1][j] + 1,        // deletion
-                d[i][j - 1] + 1,        // insertion
-                d[i - 1][j - 1] + cost, // substitution
+            current[j] = *[
+                previous[j] + 1,        // deletion
+                current[j - 1] + 1,     // insertion
+                previous[j - 1] + cost, // substitution
             ]
             .iter()
             .min()
