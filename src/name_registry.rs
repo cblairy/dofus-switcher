@@ -27,58 +27,40 @@ impl NameRegistry {
         self.by_window.remove(&window);
     }
 
-    /// Find best matching window for the given OCR text.
-    /// Strategy: exact match -> substring -> fuzzy (levenshtein <= 2)
+    /// Find a unique character match. Short OCR fragments are ignored so a
+    /// partial word cannot accidentally select a similarly named character.
     pub fn find_best_match(&self, ocr_text: &str) -> Option<u32> {
         let norm = normalize(ocr_text);
         if norm.is_empty() {
             return None;
         }
 
-        // exact
-        for (w, name) in &self.by_window {
-            if &norm == name {
-                return Some(*w);
-            }
-        }
-
-        // substring matches (prefer the one with longest name)
-        let mut substring_candidates: Vec<(&u32, &String)> = self
+        let mut candidates: Vec<(u32, usize)> = self
             .by_window
             .iter()
-            .filter(|(_, name)| norm.contains(name.as_str()) || name.contains(&norm))
+            .filter_map(|(window, name)| {
+                let ocr_len = norm.chars().count();
+                let name_len = name.chars().count();
+                let distance = if norm == *name || norm.contains(name) {
+                    0
+                } else if ocr_len >= 4 && name.contains(&norm) {
+                    // OCR may return a truncated suffix, but never trust a tiny fragment.
+                    name_len.saturating_sub(ocr_len)
+                } else if ocr_len >= 4 && name_len >= 4 {
+                    levenshtein(&norm, name)
+                } else {
+                    return None;
+                };
+                let max_distance = if name_len >= 8 { 2 } else { 1 };
+                (distance <= max_distance).then_some((*window, distance))
+            })
             .collect();
-        if substring_candidates.len() == 1 {
-            return Some(*substring_candidates[0].0);
-        } else if substring_candidates.len() > 1 {
-            // pick longest name to reduce ambiguity
-            substring_candidates.sort_by_key(|(_, name)| -(name.len() as isize));
-            if substring_candidates[0].1.len() != substring_candidates[1].1.len() {
-                return Some(*substring_candidates[0].0);
-            }
-            return None;
+        candidates.sort_by_key(|(_, distance)| *distance);
+        match candidates.as_slice() {
+            [(window, _)] => Some(*window),
+            [(window, best), (_, next), ..] if best < next => Some(*window),
+            _ => None,
         }
-
-        // fuzzy
-        let mut best: Option<(u32, usize)> = None; // (window, dist)
-        for (w, name) in &self.by_window {
-            let d = levenshtein(&norm, name);
-            if d <= 2 {
-                match best {
-                    None => best = Some((*w, d)),
-                    Some((_, prev_d)) => {
-                        if d < prev_d {
-                            best = Some((*w, d));
-                        } else if d == prev_d {
-                            // tie -> ambiguous
-                            best = None;
-                        }
-                    }
-                }
-            }
-        }
-
-        best.map(|(w, _)| w)
     }
 }
 
@@ -135,13 +117,14 @@ mod tests {
     }
 
     #[test]
-    fn substring_and_fuzzy() {
+    fn ignores_short_fragments_and_accepts_clear_matches() {
         let mut reg = NameRegistry::new();
         reg.set_name(1, "toto");
         reg.set_name(2, "titi");
 
-        assert_eq!(reg.find_best_match("to"), Some(1)); // substring
-        assert_eq!(reg.find_best_match("totoa"), Some(1)); // fuzzy (distance 1)
-        assert_eq!(reg.find_best_match("tit"), Some(2));
+        assert_eq!(reg.find_best_match("to"), None);
+        assert_eq!(reg.find_best_match("totoa"), Some(1));
+        assert_eq!(reg.find_best_match("tit"), None);
+        assert_eq!(reg.find_best_match("titi"), Some(2));
     }
 }

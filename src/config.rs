@@ -11,6 +11,8 @@ pub(crate) struct PersistedConfig {
     #[serde(default)]
     /// Saved character roster, stored in initiative order.
     pub(crate) characters: Vec<CharacterConfig>,
+    #[serde(default)]
+    pub(crate) ocr_region: Option<OcrRegion>,
     /// Legacy order as indices into the old discovery list (version 2 configs).
     #[serde(default)]
     pub(crate) window_order: Vec<usize>,
@@ -22,6 +24,15 @@ pub(crate) struct PersistedConfig {
     pub(crate) restrict_prev_next_to_dofus: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub(crate) struct OcrRegion {
+    /// Region bounds normalized to the client area of a Dofus window.
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) width: f32,
+    pub(crate) height: f32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct CharacterConfig {
     /// Stable user identity; window IDs are only associated for the current session.
@@ -31,7 +42,7 @@ pub(crate) struct CharacterConfig {
 }
 
 fn default_version() -> u32 {
-    3
+    4
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -66,4 +77,10 @@ pub(crate) fn save(config: &PersistedConfig) -> Result<()> {
     let serialized = toml::to_string_pretty(config).context("Serialisation de la config")?;
 
     fs::write(&path, serialized).with_context(|| format!("Ecriture de {}", path.display()))
+}
+
+pub(crate) fn save_ocr_region(region: Option<OcrRegion>) -> Result<()> {
+    let mut config = load()?;
+    config.ocr_region = region;
+    save(&config)
 }

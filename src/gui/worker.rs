@@ -38,6 +38,7 @@ pub(super) struct WorkerHandle {
     commands_tx: Sender<WindowCommand>,
     monitor_stop_tx: Sender<()>,
     ocr_stop_tx: Sender<()>,
+    ocr_settings_tx: Sender<Option<crate::config::OcrRegion>>,
     threads: Vec<JoinHandle<()>>,
 }
 
@@ -47,6 +48,7 @@ impl WorkerHandle {
         let (commands_tx, commands_rx) = mpsc::channel();
         let (monitor_stop_tx, monitor_stop_rx) = mpsc::channel();
         let (ocr_stop_tx, ocr_stop_rx) = mpsc::channel();
+        let (ocr_settings_tx, ocr_settings_rx) = mpsc::channel();
         let monitor_events_tx = events_tx.clone();
 
         let monitor =
@@ -55,7 +57,7 @@ impl WorkerHandle {
             let result = (|| {
                 let (conn, _) = x11rb::connect(None)
                     .map_err(|error| anyhow!("Failed to connect OCR worker to X11: {error}"))?;
-                autoswitch::auto_switch(&conn, ocr_stop_rx, events_tx.clone())
+                autoswitch::auto_switch(&conn, ocr_stop_rx, ocr_settings_rx, events_tx.clone())
             })();
             if let Err(error) = result {
                 let _ = events_tx.send(WorkerEvent::Error {
@@ -70,6 +72,7 @@ impl WorkerHandle {
             commands_tx,
             monitor_stop_tx,
             ocr_stop_tx,
+            ocr_settings_tx,
             threads: vec![monitor, ocr],
         }
     }
@@ -80,6 +83,10 @@ impl WorkerHandle {
 
     pub(super) fn commands_tx(&self) -> Sender<WindowCommand> {
         self.commands_tx.clone()
+    }
+
+    pub(super) fn set_ocr_region(&self, region: Option<crate::config::OcrRegion>) {
+        let _ = self.ocr_settings_tx.send(region);
     }
 }
 

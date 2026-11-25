@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use handy_keys::{Hotkey, KeyboardListener};
@@ -198,12 +199,45 @@ struct WindowListApp {
     capture_rx: mpsc::Receiver<Hotkey>,
     state: WindowListState,
     registered_shortcuts: HashSet<u32>,
+    overlay_tx: mpsc::Sender<OcrOverlayEvent>,
+    overlay_rx: mpsc::Receiver<OcrOverlayEvent>,
+    ocr_calibration: Option<OcrCalibration>,
+}
+
+#[derive(Clone)]
+struct OcrCalibration {
+    window: u32,
+    geometry: crate::window::ClientGeometry,
+    initial_placement: Option<OcrOverlayPlacement>,
+    autosave: Arc<Mutex<OcrOverlayAutosave>>,
+}
+
+struct OcrOverlayAutosave {
+    previous_region: Option<crate::config::OcrRegion>,
+    last_saved_region: Option<crate::config::OcrRegion>,
+    last_saved_at: Instant,
+}
+
+#[derive(Clone, Copy)]
+struct OcrOverlayPlacement {
+    position: [f32; 2],
+    size: [f32; 2],
+}
+
+enum OcrOverlayEvent {
+    Save {
+        rect: [f32; 4],
+        pixels_per_point: f32,
+    },
+    Cancel(Option<crate::config::OcrRegion>),
+    SaveFailed(String),
 }
 
 impl WindowListApp {
     fn new(worker: WorkerHandle, app_icon: egui::TextureHandle) -> Self {
         let commands_tx = worker.commands_tx();
         let (capture_tx, capture_rx) = mpsc::channel();
+        let (overlay_tx, overlay_rx) = mpsc::channel();
         let listener = KeyboardListener::new();
 
         if let Ok(listener) = listener {
@@ -231,6 +265,7 @@ impl WindowListApp {
                 state.previous_key = config.previous_key.clone();
             }
             state.restrict_prev_next_to_dofus = config.restrict_prev_next_to_dofus;
+            state.ocr_region = config.ocr_region;
             // The old config stored characters in discovery order and initiative
             // separately. Reorder that roster once, then use names as identities.
             let mut characters = config.characters;
@@ -268,6 +303,8 @@ impl WindowListApp {
             ));
         }
 
+        worker.set_ocr_region(state.ocr_region);
+
         Self {
             worker,
             app_icon,
@@ -275,6 +312,140 @@ impl WindowListApp {
             capture_rx,
             state,
             registered_shortcuts: HashSet::new(),
+            overlay_tx,
+            overlay_rx,
+            ocr_calibration: None,
+        }
+    }
+
+    fn begin_ocr_calibration(&mut self, ctx: &egui::Context) -> bool {
+        let Some(window) = self
+            .state
+            .selected_window
+            .or(self.state.focused_window)
+            .or_else(|| self.state.windows.first().copied())
+        else {
+            self.state.errors.insert(
+                WorkerKind::Ocr,
+                "Sélectionne d’abord une fenêtre Dofus pour placer la zone OCR.".to_owned(),
+            );
+            return false;
+        };
+        match crate::window::client_geometry(window) {
+            Ok(geometry) => {
+                let scale = ctx.native_pixels_per_point().unwrap_or(1.0).max(0.1);
+                let initial_placement = if let Some(region) = self.state.ocr_region {
+                    Some(OcrOverlayPlacement {
+                        position: [
+                            (f32::from(geometry.x)
+                                + region.x.clamp(0.0, 1.0) * f32::from(geometry.width))
+                                / scale,
+                            (f32::from(geometry.y)
+                                + region.y.clamp(0.0, 1.0) * f32::from(geometry.height))
+                                / scale,
+                        ],
+                        size: [
+                            (region.width.clamp(0.001, 1.0) * f32::from(geometry.width) / scale)
+                                .max(92.0),
+                            (region.height.clamp(0.001, 1.0) * f32::from(geometry.height) / scale)
+                                .max(34.0),
+                        ],
+                    })
+                } else {
+                    Some(OcrOverlayPlacement {
+                        position: [
+                            (f32::from(geometry.x) + f32::from(geometry.width) * 0.5
+                                - 160.0 * scale)
+                                / scale,
+                            (f32::from(geometry.y) + f32::from(geometry.height) * 0.5
+                                - 52.0 * scale)
+                                / scale,
+                        ],
+                        size: [320.0, 106.0],
+                    })
+                };
+                let initial_region = initial_placement.and_then(|placement| {
+                    region_from_overlay(
+                        geometry,
+                        [
+                            placement.position[0],
+                            placement.position[1],
+                            placement.position[0] + placement.size[0],
+                            placement.position[1] + placement.size[1],
+                        ],
+                        scale,
+                    )
+                });
+                self.ocr_calibration = Some(OcrCalibration {
+                    window,
+                    geometry,
+                    initial_placement,
+                    autosave: Arc::new(Mutex::new(OcrOverlayAutosave {
+                        previous_region: self.state.ocr_region,
+                        last_saved_region: initial_region,
+                        last_saved_at: Instant::now(),
+                    })),
+                });
+                self.state.errors.remove(&WorkerKind::Ocr);
+                true
+            }
+            Err(error) => {
+                self.state.errors.insert(
+                    WorkerKind::Ocr,
+                    format!("Impossible de placer l’overlay OCR : {error:#}"),
+                );
+                false
+            }
+        }
+    }
+
+    fn receive_overlay_events(&mut self) {
+        while let Ok(event) = self.overlay_rx.try_recv() {
+            match event {
+                OcrOverlayEvent::Save {
+                    rect,
+                    pixels_per_point,
+                } => {
+                    if let Some(calibration) = self.ocr_calibration.take() {
+                        if !self.state.detected_windows.contains(&calibration.window) {
+                            self.state.errors.insert(
+                                WorkerKind::Ocr,
+                                "La fenêtre Dofus de référence a été fermée pendant le placement."
+                                    .to_owned(),
+                            );
+                            continue;
+                        }
+                        let geometry = crate::window::client_geometry(calibration.window)
+                            .unwrap_or(calibration.geometry);
+                        if let Some(region) = region_from_overlay(geometry, rect, pixels_per_point)
+                        {
+                            self.state.ocr_region = Some(region);
+                            self.worker.set_ocr_region(Some(region));
+                            self.state.errors.remove(&WorkerKind::Ocr);
+                            self.persist_config();
+                        } else {
+                            self.state.errors.insert(
+                                WorkerKind::Ocr,
+                                "Place la zone OCR à l’intérieur de la fenêtre Dofus.".to_owned(),
+                            );
+                        }
+                    }
+                }
+                OcrOverlayEvent::Cancel(previous_region) => {
+                    self.ocr_calibration = None;
+                    self.state.ocr_region = previous_region;
+                    self.state.ocr_text.clear();
+                    self.state.ocr_target = None;
+                    self.state.ocr_candidate = None;
+                    self.state.ocr_candidate_hits = 0;
+                    self.state.ocr_candidate_switched = false;
+                    self.worker.set_ocr_region(previous_region);
+                    self.persist_config();
+                }
+                OcrOverlayEvent::SaveFailed(message) => {
+                    self.state.errors.insert(WorkerKind::Ocr, message);
+                }
+            }
         }
     }
 
@@ -351,34 +522,41 @@ impl WindowListApp {
                     self.state.errors.remove(&worker);
                 }
                 WorkerEvent::OcrText(text) => {
-                    // Debug: show received OCR text and normalized form
-                    let norm_text = crate::string_utils::normalize(&text);
-                    eprintln!("[gui] OCR received: '{}' -> '{}'", text, norm_text);
-
-                    // Build NameRegistry from UI-entered names and attempt to match
+                    self.state.ocr_text = text.clone();
                     let mut reg = crate::name_registry::NameRegistry::new();
-                    eprintln!("[gui] Candidate names:");
                     for (window, name) in &self.state.character_names {
-                        eprintln!("  0x{window:08x} => '{}'", name);
                         reg.set_name(*window, name);
                     }
 
                     if let Some(target) = reg.find_best_match(&text) {
-                        eprintln!("[gui] OCR matched -> activating 0x{target:08x}");
-                        // activate the matched window
-                        if self
-                            .commands_tx
-                            .send(super::worker::WindowCommand::Activate(target))
-                            .is_err()
+                        self.state.ocr_target = Some(target);
+                        if self.state.ocr_candidate == Some(target) {
+                            self.state.ocr_candidate_hits =
+                                self.state.ocr_candidate_hits.saturating_add(1);
+                        } else {
+                            self.state.ocr_candidate = Some(target);
+                            self.state.ocr_candidate_hits = 1;
+                            self.state.ocr_candidate_switched = false;
+                        }
+                        if self.state.ocr_candidate_hits >= 2 && !self.state.ocr_candidate_switched
                         {
-                            self.state.errors.insert(
-                                WorkerKind::Activation,
-                                "Le moniteur de fenêtres est indisponible.".to_owned(),
-                            );
+                            if self
+                                .commands_tx
+                                .send(super::worker::WindowCommand::Activate(target))
+                                .is_err()
+                            {
+                                self.state.errors.insert(
+                                    WorkerKind::Activation,
+                                    "Le moniteur de fenêtres est indisponible.".to_owned(),
+                                );
+                            }
+                            self.state.ocr_candidate_switched = true;
                         }
                     } else {
-                        // no match — optional debug log
-                        eprintln!("[gui] OCR no match for '{}'", text);
+                        self.state.ocr_target = None;
+                        self.state.ocr_candidate = None;
+                        self.state.ocr_candidate_hits = 0;
+                        self.state.ocr_candidate_switched = false;
                     }
                 }
             }
@@ -431,8 +609,9 @@ impl WindowListApp {
 
     fn persist_config(&self) {
         let config = crate::config::PersistedConfig {
-            version: 3,
+            version: 4,
             characters: self.state.persisted_characters.clone(),
+            ocr_region: self.state.ocr_region,
             window_order: Vec::new(),
             next_key: self.state.next_key.clone(),
             previous_key: self.state.previous_key.clone(),
@@ -476,6 +655,151 @@ fn discard_incremental_name_fragments(
         .collect()
 }
 
+fn region_from_overlay(
+    geometry: crate::window::ClientGeometry,
+    rect: [f32; 4],
+    pixels_per_point: f32,
+) -> Option<crate::config::OcrRegion> {
+    let scale = pixels_per_point.max(0.1);
+    let left = (rect[0] * scale - f32::from(geometry.x)).clamp(0.0, f32::from(geometry.width));
+    let top = (rect[1] * scale - f32::from(geometry.y)).clamp(0.0, f32::from(geometry.height));
+    let right = (rect[2] * scale - f32::from(geometry.x)).clamp(0.0, f32::from(geometry.width));
+    let bottom = (rect[3] * scale - f32::from(geometry.y)).clamp(0.0, f32::from(geometry.height));
+    if right - left < 8.0 || bottom - top < 8.0 {
+        return None;
+    }
+    Some(crate::config::OcrRegion {
+        x: left / f32::from(geometry.width),
+        y: top / f32::from(geometry.height),
+        width: (right - left) / f32::from(geometry.width),
+        height: (bottom - top) / f32::from(geometry.height),
+    })
+}
+
+fn render_ocr_overlay(
+    ui: &mut egui::Ui,
+    events_tx: &mpsc::Sender<OcrOverlayEvent>,
+    geometry: crate::window::ClientGeometry,
+    autosave: &Arc<Mutex<OcrOverlayAutosave>>,
+) {
+    let outer_rect = ui.input(|input| input.viewport().inner_rect.or(input.viewport().outer_rect));
+    let scale = ui.ctx().native_pixels_per_point().unwrap_or(1.0);
+    if let Some(rect) = outer_rect {
+        autosave_ocr_region(
+            geometry,
+            [rect.min.x, rect.min.y, rect.max.x, rect.max.y],
+            scale,
+            autosave,
+            events_tx,
+        );
+    }
+    if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+        cancel_ocr_overlay(ui.ctx(), autosave, events_tx);
+        return;
+    }
+    if ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+        save_ocr_overlay(ui.ctx(), outer_rect, geometry, scale, events_tx);
+        return;
+    }
+    egui::Frame::new()
+        .fill(egui::Color32::from_rgba_unmultiplied(24, 21, 31, 170))
+        .stroke(egui::Stroke::new(
+            2.0,
+            egui::Color32::from_rgb(223, 177, 98),
+        ))
+        .corner_radius(egui::CornerRadius::same(8))
+        .inner_margin(egui::Margin::symmetric(6, 4))
+        .show(ui, |ui| {
+            let (handle, drag) =
+                ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.0), egui::Sense::drag());
+            ui.painter().text(
+                handle.left_center(),
+                egui::Align2::LEFT_CENTER,
+                "Glisse ↘ pour redimensionner · Entrée garder",
+                egui::FontId::proportional(10.0),
+                egui::Color32::from_rgb(237, 207, 153),
+            );
+            if drag.drag_started() {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+            let grip_rect = egui::Rect::from_min_size(
+                ui.max_rect().right_bottom() + egui::vec2(4.0, 3.0) - egui::vec2(20.0, 20.0),
+                egui::vec2(20.0, 20.0),
+            );
+            let grip = ui.interact(
+                grip_rect,
+                ui.id().with("ocr-overlay-resize"),
+                egui::Sense::drag(),
+            );
+            if grip.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+            }
+            if grip.drag_started() {
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::BeginResize(
+                        egui::ResizeDirection::SouthEast,
+                    ));
+            }
+            let grip_color = if grip.hovered() || grip.dragged() {
+                egui::Color32::WHITE
+            } else {
+                egui::Color32::from_rgb(255, 207, 105)
+            };
+            ui.painter().rect_filled(
+                grip_rect.shrink(1.0),
+                egui::CornerRadius::same(4),
+                egui::Color32::from_rgba_unmultiplied(24, 21, 31, 235),
+            );
+            for offset in [7.0, 12.0, 17.0] {
+                ui.painter().line_segment(
+                    [
+                        grip_rect.right_bottom() - egui::vec2(offset, 1.0),
+                        grip_rect.right_bottom() - egui::vec2(1.0, offset),
+                    ],
+                    egui::Stroke::new(2.0, grip_color),
+                );
+            }
+        });
+}
+
+fn restore_ocr_parent(ctx: &egui::Context) {
+    let parent = ctx.input(|input| input.viewport().parent.unwrap_or(egui::ViewportId::ROOT));
+    ctx.send_viewport_cmd_to(parent, egui::ViewportCommand::Minimized(false));
+}
+
+fn save_ocr_overlay(
+    ctx: &egui::Context,
+    outer_rect: Option<egui::Rect>,
+    geometry: crate::window::ClientGeometry,
+    scale: f32,
+    events_tx: &mpsc::Sender<OcrOverlayEvent>,
+) {
+    if let Some(rect) = outer_rect {
+        let bounds = [rect.min.x, rect.min.y, rect.max.x, rect.max.y];
+        if let Some(region) = region_from_overlay(geometry, bounds, scale) {
+            match crate::config::save_ocr_region(Some(region)) {
+                Ok(()) => {
+                    let _ = events_tx.send(OcrOverlayEvent::Save {
+                        rect: bounds,
+                        pixels_per_point: scale,
+                    });
+                    restore_ocr_parent(ctx);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                Err(error) => {
+                    let _ = events_tx.send(OcrOverlayEvent::SaveFailed(format!(
+                        "Sauvegarde de la zone OCR impossible : {error:#}"
+                    )));
+                }
+            }
+        } else {
+            let _ = events_tx.send(OcrOverlayEvent::SaveFailed(
+                "Place la zone OCR à l’intérieur de la fenêtre Dofus.".to_owned(),
+            ));
+        }
+    }
+}
+
 impl eframe::App for WindowListApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         [0.0, 0.0, 0.0, 0.0]
@@ -483,6 +807,7 @@ impl eframe::App for WindowListApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.receive_worker_events();
+        self.receive_overlay_events();
         let available = ui.available_size();
         let inner_size = egui::vec2((available.x - 2.0).max(0.0), (available.y - 2.0).max(0.0));
 
@@ -720,6 +1045,82 @@ impl eframe::App for WindowListApp {
                                                         Some(GlobalAction::Next);
                                                 }
                                             }
+                                        });
+                                    });
+
+                                ui.add_space(8.0);
+                                egui::Frame::new()
+                                    .fill(egui::Color32::from_rgb(27, 24, 35))
+                                    .stroke(egui::Stroke::new(
+                                        1.0,
+                                        egui::Color32::from_rgb(52, 46, 62),
+                                    ))
+                                    .corner_radius(egui::CornerRadius::same(8))
+                                    .inner_margin(egui::Margin::symmetric(6, 4))
+                                    .show(ui, |ui| {
+                                        ui.set_min_width(ui.available_width());
+                                        ui.horizontal(|ui| {
+                                            ui.vertical(|ui| {
+                                                ui.label(
+                                                    egui::RichText::new("LECTURE DU TOUR · OCR")
+                                                        .size(10.0)
+                                                        .strong()
+                                                        .color(egui::Color32::from_rgb(202, 167, 104)),
+                                                );
+                                                let status = if let Some(window) = self.state.ocr_target {
+                                                    format!("Détecté : {}", self.state.character_label(window))
+                                                } else if !self.state.ocr_text.trim().is_empty() {
+                                                    format!("Texte lu : {}", self.state.ocr_text.trim())
+                                                } else if self.state.ocr_region.is_some() {
+                                                    "Zone active · attente du nom de tour".to_owned()
+                                                } else {
+                                                    "Place la zone sur la vignette du début de tour.".to_owned()
+                                                };
+                                                ui.label(
+                                                    egui::RichText::new(status)
+                                                        .size(10.0)
+                                                        .color(egui::Color32::from_rgb(166, 157, 174)),
+                                                );
+                                            });
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if self.state.ocr_region.is_some()
+                                                        && ui.button("Désactiver").clicked()
+                                                    {
+                                                        self.state.ocr_region = None;
+                                                        self.state.ocr_text.clear();
+                                                        self.state.ocr_target = None;
+                                                        self.state.ocr_candidate = None;
+                                                        self.state.ocr_candidate_hits = 0;
+                                                        self.state.ocr_candidate_switched = false;
+                                                        self.worker.set_ocr_region(None);
+                                                    }
+                                                    if ui.button(if self.state.ocr_region.is_some() {
+                                                        "Repositionner"
+                                                    } else {
+                                                        "Placer la zone"
+                                                    }).clicked() {
+                                                        if self.begin_ocr_calibration(ui.ctx()) {
+                                                            ui.ctx().send_viewport_cmd(
+                                                                egui::ViewportCommand::Minimized(true),
+                                                            );
+                                                        }
+                                                    }
+                                                    if let Some(window) = self.state.ocr_target {
+                                                        if ui.button("Basculer").clicked()
+                                                            && self.commands_tx.send(
+                                                                super::worker::WindowCommand::Activate(window),
+                                                            ).is_err()
+                                                        {
+                                                            self.state.errors.insert(
+                                                                WorkerKind::Activation,
+                                                                "Le moniteur de fenêtres est indisponible.".to_owned(),
+                                                            );
+                                                        }
+                                                    }
+                                                },
+                                            );
                                         });
                                     });
 
@@ -1077,6 +1478,92 @@ impl eframe::App for WindowListApp {
                 self.state.sync_character_profiles();
                 self.persist_config();
             });
-        ui.ctx().request_repaint_after(Duration::from_millis(100));
+        if let Some(calibration) = self.ocr_calibration.clone() {
+            let viewport_id = egui::ViewportId::from_hash_of("ocr-calibration-zone");
+            let tx = self.overlay_tx.clone();
+            let geometry = calibration.geometry;
+            let autosave = calibration.autosave.clone();
+            let mut builder = egui::ViewportBuilder::default()
+                .with_title("Dofus Switcher OCR Zone")
+                .with_min_inner_size([92.0, 34.0])
+                .with_decorations(false)
+                .with_transparent(true)
+                .with_always_on_top()
+                .with_resizable(true)
+                .with_taskbar(false);
+            if let Some(placement) = calibration.initial_placement {
+                builder = builder
+                    .with_position(placement.position)
+                    .with_inner_size(placement.size);
+            }
+            ui.ctx()
+                .show_viewport_deferred(viewport_id, builder, move |overlay_ui, _class| {
+                    render_ocr_overlay(overlay_ui, &tx, geometry, &autosave)
+                });
+            if let Some(calibration) = &mut self.ocr_calibration {
+                calibration.initial_placement = None;
+            }
+        }
+        if !ui
+            .ctx()
+            .input(|input| input.viewport().minimized.unwrap_or(false))
+        {
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
+        }
     }
+}
+
+fn autosave_ocr_region(
+    geometry: crate::window::ClientGeometry,
+    rect: [f32; 4],
+    scale: f32,
+    autosave: &Arc<Mutex<OcrOverlayAutosave>>,
+    events_tx: &mpsc::Sender<OcrOverlayEvent>,
+) {
+    let Some(region) = region_from_overlay(geometry, rect, scale) else {
+        return;
+    };
+    let Ok(mut autosave) = autosave.lock() else {
+        return;
+    };
+    if autosave
+        .last_saved_region
+        .is_some_and(|saved| regions_are_close(saved, region))
+        || autosave.last_saved_at.elapsed() < Duration::from_millis(250)
+    {
+        return;
+    }
+    autosave.last_saved_at = Instant::now();
+    match crate::config::save_ocr_region(Some(region)) {
+        Ok(()) => autosave.last_saved_region = Some(region),
+        Err(error) => {
+            let _ = events_tx.send(OcrOverlayEvent::SaveFailed(format!(
+                "Sauvegarde automatique de la zone OCR impossible : {error:#}"
+            )));
+        }
+    }
+}
+
+fn regions_are_close(a: crate::config::OcrRegion, b: crate::config::OcrRegion) -> bool {
+    let tolerance = 0.001;
+    (a.x - b.x).abs() < tolerance
+        && (a.y - b.y).abs() < tolerance
+        && (a.width - b.width).abs() < tolerance
+        && (a.height - b.height).abs() < tolerance
+}
+
+fn cancel_ocr_overlay(
+    ctx: &egui::Context,
+    autosave: &Arc<Mutex<OcrOverlayAutosave>>,
+    events_tx: &mpsc::Sender<OcrOverlayEvent>,
+) {
+    let previous_region = autosave.lock().ok().and_then(|state| state.previous_region);
+    if let Err(error) = crate::config::save_ocr_region(previous_region) {
+        let _ = events_tx.send(OcrOverlayEvent::SaveFailed(format!(
+            "Restauration de la zone OCR impossible : {error:#}"
+        )));
+    }
+    let _ = events_tx.send(OcrOverlayEvent::Cancel(previous_region));
+    restore_ocr_parent(ctx);
+    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
 }

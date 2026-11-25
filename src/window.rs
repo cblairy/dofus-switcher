@@ -1,6 +1,7 @@
 pub(crate) mod activation;
 mod discovery;
 mod focus;
+mod geometry;
 
 use anyhow::Result;
 use x11rb::connection::Connection;
@@ -8,6 +9,7 @@ use x11rb::protocol::xproto::Window;
 
 pub(crate) use discovery::find_dofus_windows;
 pub(crate) use focus::active_window;
+pub(crate) use geometry::{ClientGeometry, client_geometry};
 
 pub(crate) struct DofusWindowTracker {
     windows: Vec<Window>,

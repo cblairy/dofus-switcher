@@ -25,6 +25,12 @@ pub(super) struct WindowListState {
     pub(super) persisted_characters: Vec<crate::config::CharacterConfig>,
     pub(super) association_window: Option<Window>,
     pub(super) association_query: String,
+    pub(super) ocr_region: Option<crate::config::OcrRegion>,
+    pub(super) ocr_text: String,
+    pub(super) ocr_target: Option<Window>,
+    pub(super) ocr_candidate: Option<Window>,
+    pub(super) ocr_candidate_hits: u8,
+    pub(super) ocr_candidate_switched: bool,
 }
 
 impl Default for WindowListState {
@@ -46,6 +52,12 @@ impl Default for WindowListState {
             persisted_characters: Vec::new(),
             association_window: None,
             association_query: String::new(),
+            ocr_region: None,
+            ocr_text: String::new(),
+            ocr_target: None,
+            ocr_candidate: None,
+            ocr_candidate_hits: 0,
+            ocr_candidate_switched: false,
         }
     }
 }
