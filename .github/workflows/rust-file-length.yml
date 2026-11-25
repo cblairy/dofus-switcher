@@ -1,0 +1,13 @@
+name: Rust file length
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  file-length:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enforce the 200-line limit
+        run: sh scripts/check-rust-file-lengths.sh

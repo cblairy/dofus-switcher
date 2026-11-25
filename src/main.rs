@@ -1,5 +1,4 @@
 mod autoswitch;
-mod capture;
 mod config;
 mod gui;
 mod name_registry;

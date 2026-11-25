@@ -23,10 +23,6 @@ impl NameRegistry {
         }
     }
 
-    pub fn remove(&mut self, window: u32) {
-        self.by_window.remove(&window);
-    }
-
     /// Find a unique character match. Short OCR fragments are ignored so a
     /// partial word cannot accidentally select a similarly named character.
     pub fn find_best_match(&self, ocr_text: &str) -> Option<u32> {

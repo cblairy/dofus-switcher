@@ -1,16 +1,18 @@
 use anyhow::{Context, Result, bail};
-use ocrs::{ImageSource, OcrEngine, OcrEngineParams};
+use ocrs::{OcrEngine, OcrEngineParams};
 use rten::Model;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::Duration;
-use x11rb::connection::Connection;
 use x11rb::errors::ReplyError;
-use x11rb::protocol::xproto::{ConnectionExt, ImageFormat, ImageOrder, Window};
 use x11rb::rust_connection::RustConnection;
 
 use crate::config::OcrRegion;
 use crate::runtime::{WorkerEvent, WorkerKind};
-use crate::window::{self, ClientGeometry};
+use crate::window;
+
+mod capture;
+mod preprocess;
+mod ximage;
 
 const OCR_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -61,7 +63,12 @@ pub(crate) fn auto_switch(
 
         match dofus_windows.refresh(conn) {
             Ok(Some(active_window)) => {
-                match process_capture(conn, active_window, region, engine.as_ref().unwrap()) {
+                match capture::process_capture(
+                    conn,
+                    active_window,
+                    region,
+                    engine.as_ref().unwrap(),
+                ) {
                     Ok(detected) => {
                         report_error_recovered(&mut last_ocr_error, &events_tx);
                         let _ = events_tx.send(WorkerEvent::OcrText(detected.unwrap_or_default()));
@@ -149,158 +156,4 @@ fn init_engine() -> Result<OcrEngine> {
         ..Default::default()
     })
     .context("Initialisation du moteur OCR impossible")
-}
-
-fn process_capture(
-    conn: &RustConnection,
-    window: Window,
-    region: OcrRegion,
-    engine: &OcrEngine,
-) -> Result<Option<String>> {
-    let geometry = window_geometry(conn, window)?;
-    let (x, y, width, height) = pixel_region(geometry, region);
-    let image = conn
-        .get_image(ImageFormat::Z_PIXMAP, window, x, y, width, height, u32::MAX)?
-        .reply()?;
-    let rgb = ximage_to_rgb(conn, window, image.depth, &image.data, width, height)?;
-
-    // The character label is small in the game UI. Upscaling and normalizing
-    // contrast makes the detector substantially more reliable at that size.
-    let rgb = image::RgbImage::from_raw(width.into(), height.into(), rgb)
-        .context("Format de capture X11 invalide")?;
-    let scaled = image::imageops::resize(
-        &rgb,
-        width.saturating_mul(2).max(1).into(),
-        height.saturating_mul(2).max(1).into(),
-        image::imageops::FilterType::CatmullRom,
-    );
-    let mut gray = image::imageops::grayscale(&scaled);
-    stretch_contrast(gray.as_mut());
-    let (scaled_width, scaled_height) = gray.dimensions();
-    let input = engine.prepare_input(ImageSource::from_bytes(
-        gray.as_raw(),
-        (scaled_width, scaled_height),
-    )?)?;
-    let text = engine.get_text(&input)?.trim().to_owned();
-
-    if text.chars().count() >= 2 {
-        Ok(Some(text))
-    } else {
-        Ok(None)
-    }
-}
-
-fn window_geometry(conn: &impl Connection, window: Window) -> Result<ClientGeometry> {
-    let root = conn.setup().roots[0].root;
-    let geometry = conn.get_geometry(window)?.reply()?;
-    let origin = conn.translate_coordinates(window, root, 0, 0)?.reply()?;
-    Ok(ClientGeometry {
-        x: origin.dst_x,
-        y: origin.dst_y,
-        width: geometry.width,
-        height: geometry.height,
-    })
-}
-
-fn pixel_region(geometry: ClientGeometry, region: OcrRegion) -> (i16, i16, u16, u16) {
-    let x = (region.x.clamp(0.0, 0.999) * f32::from(geometry.width)).round() as u16;
-    let y = (region.y.clamp(0.0, 0.999) * f32::from(geometry.height)).round() as u16;
-    let max_width = geometry.width.saturating_sub(x).max(1);
-    let max_height = geometry.height.saturating_sub(y).max(1);
-    let width = (region.width.clamp(0.001, 1.0) * f32::from(geometry.width))
-        .round()
-        .clamp(1.0, f32::from(max_width)) as u16;
-    let height = (region.height.clamp(0.001, 1.0) * f32::from(geometry.height))
-        .round()
-        .clamp(1.0, f32::from(max_height)) as u16;
-    (x as i16, y as i16, width, height)
-}
-
-fn ximage_to_rgb(
-    conn: &impl Connection,
-    window: Window,
-    depth: u8,
-    data: &[u8],
-    width: u16,
-    height: u16,
-) -> Result<Vec<u8>> {
-    let attributes = conn.get_window_attributes(window)?.reply()?;
-    let visual = conn
-        .setup()
-        .roots
-        .iter()
-        .flat_map(|screen| &screen.allowed_depths)
-        .flat_map(|depth| &depth.visuals)
-        .find(|visual| visual.visual_id == attributes.visual)
-        .context("Format de couleurs X11 introuvable")?;
-    let format = conn
-        .setup()
-        .pixmap_formats
-        .iter()
-        .find(|format| format.depth == depth)
-        .context("Format de capture X11 introuvable")?;
-    let bytes_per_pixel = usize::from(format.bits_per_pixel).div_ceil(8);
-    let scanline_pad = usize::from(format.scanline_pad).max(8);
-    let row_bytes = (usize::from(width) * usize::from(format.bits_per_pixel))
-        .div_ceil(scanline_pad)
-        * (scanline_pad / 8);
-    let mut rgb = Vec::with_capacity(usize::from(width) * usize::from(height) * 3);
-
-    for y in 0..usize::from(height) {
-        for x in 0..usize::from(width) {
-            let offset = y * row_bytes + x * bytes_per_pixel;
-            let pixel_bytes = data
-                .get(offset..offset + bytes_per_pixel)
-                .context("Capture X11 tronquée")?;
-            let pixel = match conn.setup().image_byte_order {
-                ImageOrder::LSB_FIRST => pixel_bytes
-                    .iter()
-                    .enumerate()
-                    .fold(0u32, |value, (index, byte)| {
-                        value | (u32::from(*byte) << (index * 8))
-                    }),
-                ImageOrder::MSB_FIRST => pixel_bytes
-                    .iter()
-                    .fold(0u32, |value, byte| (value << 8) | u32::from(*byte)),
-                _ => bail!("Ordre des pixels X11 non pris en charge"),
-            };
-            rgb.push(scale_channel(pixel, visual.red_mask));
-            rgb.push(scale_channel(pixel, visual.green_mask));
-            rgb.push(scale_channel(pixel, visual.blue_mask));
-        }
-    }
-    Ok(rgb)
-}
-
-fn scale_channel(pixel: u32, mask: u32) -> u8 {
-    if mask == 0 {
-        return 0;
-    }
-    let shift = mask.trailing_zeros();
-    let max = mask >> shift;
-    let value = (pixel & mask) >> shift;
-    ((value * 255 + max / 2) / max) as u8
-}
-
-fn stretch_contrast(gray: &mut [u8]) {
-    let Some(&max) = gray.iter().max() else {
-        return;
-    };
-    let min = gray
-        .iter()
-        .copied()
-        .filter(|value| *value > 12)
-        .min()
-        .unwrap_or(0);
-    if max <= min {
-        return;
-    }
-    let range = u16::from(max - min);
-    for value in gray {
-        *value = if *value <= min {
-            0
-        } else {
-            (u16::from(*value - min) * 255 / range).min(255) as u8
-        };
-    }
 }
