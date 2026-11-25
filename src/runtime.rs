@@ -5,6 +5,7 @@ pub(crate) enum WorkerKind {
     Monitor,
     Ocr,
     Activation,
+    HotkeyCapture,
 }
 
 pub(crate) enum WorkerEvent {

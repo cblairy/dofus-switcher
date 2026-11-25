@@ -6,7 +6,11 @@ use crate::window;
 use super::state::MonitorState;
 
 pub(super) fn process(state: &mut MonitorState, updates: &std::sync::mpsc::Sender<WorkerEvent>) {
-    while let Some(event) = state.manager.try_recv() {
+    let events = match &state.manager {
+        Some(manager) => std::iter::from_fn(|| manager.try_recv()).collect::<Vec<_>>(),
+        None => return,
+    };
+    for event in events {
         if event.state != HotkeyState::Pressed {
             continue;
         }

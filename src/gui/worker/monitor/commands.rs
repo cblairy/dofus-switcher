@@ -16,25 +16,18 @@ pub(super) fn process(
         match command {
             WindowCommand::Activate(window) => super::activate(window, state, updates),
             WindowCommand::AssignShortcut { window, hotkey } => {
-                handle_assign_shortcut(
-                    &state.manager,
-                    &mut state.registry,
-                    window,
-                    hotkey,
-                    updates,
-                );
+                if let Some(manager) = &state.manager {
+                    handle_assign_shortcut(manager, &mut state.registry, window, hotkey, updates);
+                }
             }
             WindowCommand::AssignGlobal { action, hotkey } => {
-                let registered = handle_assign_global(
-                    &state.manager,
-                    &mut state.registry,
-                    action,
-                    hotkey,
-                    updates,
-                );
-                match action {
-                    GlobalAction::Next => state._next_hotkey = registered,
-                    GlobalAction::Previous => state._previous_hotkey = registered,
+                if let Some(manager) = &state.manager {
+                    let registered =
+                        handle_assign_global(manager, &mut state.registry, action, hotkey, updates);
+                    match action {
+                        GlobalAction::Next => state._next_hotkey = registered,
+                        GlobalAction::Previous => state._previous_hotkey = registered,
+                    }
                 }
             }
             WindowCommand::SetRestrictPrevNextToDofus(value) => {

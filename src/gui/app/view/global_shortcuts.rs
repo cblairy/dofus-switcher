@@ -15,7 +15,6 @@ pub(super) fn show(app: &mut WindowListApp, ui: &mut egui::Ui) {
             ui.horizontal(|ui| {
                 draw_label(ui);
                 ui.separator();
-                ui.add_space((ui.available_width() - 220.0).max(0.0));
                 draw_shortcut(app, ui, GlobalAction::Previous);
                 draw_shortcut(app, ui, GlobalAction::Next);
             });
@@ -39,9 +38,16 @@ fn draw_label(ui: &mut egui::Ui) {
 }
 
 fn draw_shortcut(app: &mut WindowListApp, ui: &mut egui::Ui, action: GlobalAction) {
+    let capture_enabled = !app
+        .state
+        .errors
+        .contains_key(&crate::runtime::WorkerKind::HotkeyCapture);
     if app.state.capture_global == Some(action) {
         if ui
-            .button("Appuyez sur une touche…")
+            .add_enabled(
+                capture_enabled,
+                egui::Button::new("Appuyez sur une touche…"),
+            )
             .on_hover_text("Appuie sur la touche souhaitée, ou clique ici pour annuler.")
             .clicked()
         {
@@ -57,8 +63,15 @@ fn draw_shortcut(app: &mut WindowListApp, ui: &mut egui::Ui, action: GlobalActio
         GlobalAction::Next => ("Suivant", app.state.next_key.as_deref().unwrap_or("—")),
     };
     if ui
-        .button(format!("{label}   {key}"))
-        .on_hover_text("Clique puis appuie sur une touche pour changer ce raccourci.")
+        .add_enabled(
+            capture_enabled,
+            egui::Button::new(format!("{label}   {key}")),
+        )
+        .on_hover_text(if capture_enabled {
+            "Clique puis appuie sur une touche pour changer ce raccourci."
+        } else {
+            "Écoute clavier indisponible : consulte le message d’état en haut de la fenêtre."
+        })
         .clicked()
     {
         app.state.capture_global = Some(action);

@@ -22,22 +22,32 @@ impl WindowListApp {
         let (capture_tx, capture_rx) = mpsc::channel();
         let (overlay_tx, overlay_rx) = mpsc::channel();
         let listener = KeyboardListener::new();
-
-        if let Ok(listener) = listener {
-            let tx = capture_tx;
-            thread::spawn(move || {
-                while let Ok(event) = listener.recv() {
-                    if event.is_key_down {
-                        let Ok(hotkey) = event.as_hotkey() else {
-                            continue;
-                        };
-                        let _ = tx.send(hotkey);
+        let listener_error = match listener {
+            Ok(listener) => {
+                let tx = capture_tx;
+                thread::spawn(move || {
+                    while let Ok(event) = listener.recv() {
+                        if event.is_key_down {
+                            let Ok(hotkey) = event.as_hotkey() else {
+                                continue;
+                            };
+                            let _ = tx.send(hotkey);
+                        }
                     }
-                }
-            });
-        }
+                });
+                None
+            }
+            Err(error) => Some(format!(
+                "Écoute clavier indisponible : impossible d’accéder à /dev/input ({error:#}). La détection et le changement de fenêtres restent actifs ; vérifiez les permissions du périphérique clavier."
+            )),
+        };
 
         let mut state = WindowListState::default();
+        if let Some(message) = listener_error {
+            state
+                .errors
+                .insert(crate::runtime::WorkerKind::HotkeyCapture, message);
+        }
 
         // chargement de la config persistée
         match crate::config::load() {

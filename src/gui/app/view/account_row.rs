@@ -103,9 +103,13 @@ fn show_actions(app: &mut WindowListApp, ui: &mut egui::Ui, index: usize, window
 }
 
 fn show_shortcut_button(app: &mut WindowListApp, ui: &mut egui::Ui, window: u32) {
+    let capture_enabled = !app.state.errors.contains_key(&WorkerKind::HotkeyCapture);
     if app.state.capture_window == Some(window) {
         if ui
-            .add_sized([86.0, 28.0], egui::Button::new("Touche…"))
+            .add_enabled_ui(capture_enabled, |ui| {
+                ui.add_sized([86.0, 28.0], egui::Button::new("Touche…"))
+            })
+            .inner
             .clicked()
         {
             app.state.capture_window = None;
@@ -119,10 +123,15 @@ fn show_shortcut_button(app: &mut WindowListApp, ui: &mut egui::Ui, window: u32)
         .cloned()
         .unwrap_or_else(|| "Raccourci".to_owned());
     if ui
-        .add_sized([86.0, 28.0], egui::Button::new(label))
-        .on_hover_text(
-            "Clique puis appuie sur une touche pour basculer directement vers ce compte.",
-        )
+        .add_enabled_ui(capture_enabled, |ui| {
+            ui.add_sized([86.0, 28.0], egui::Button::new(label))
+        })
+        .inner
+        .on_hover_text(if capture_enabled {
+            "Clique puis appuie sur une touche pour basculer directement vers ce compte."
+        } else {
+            "Écoute clavier indisponible : consulte le message d’état en haut de la fenêtre."
+        })
         .clicked()
     {
         app.state.capture_window = Some(window);

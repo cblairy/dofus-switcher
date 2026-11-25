@@ -10,7 +10,7 @@ use crate::window::DofusWindowTracker;
 
 pub(super) struct MonitorState {
     pub(super) connection: RustConnection,
-    pub(super) manager: HotkeyManager,
+    pub(super) manager: Option<HotkeyManager>,
     pub(super) registry: HotkeyRegistry,
     pub(super) tracker: DofusWindowTracker,
     pub(super) window_order: Vec<Window>,
@@ -34,13 +34,13 @@ impl MonitorState {
             }
         };
         let manager = match HotkeyManager::new() {
-            Ok(manager) => manager,
+            Ok(manager) => Some(manager),
             Err(error) => {
                 let _ = updates.send(WorkerEvent::Error {
                     worker: WorkerKind::Activation,
-                    message: format!("Échec de l'initialisation du gestionnaire de raccourcis globaux : {error:#}"),
+                    message: format!("Raccourcis globaux indisponibles : impossible d’accéder à /dev/input ({error:#}). La détection des fenêtres reste active ; vérifiez les permissions du périphérique clavier."),
                 });
-                return None;
+                None
             }
         };
         Some(Self {
@@ -59,14 +59,16 @@ impl MonitorState {
         &mut self,
         updates: &std::sync::mpsc::Sender<WorkerEvent>,
     ) {
+        let Some(manager) = &self.manager else {
+            return;
+        };
         self._next_hotkey = try_register(
-            &self.manager,
+            manager,
             "Tab",
             HotkeyAction::Next,
             &mut self.registry,
             updates,
         );
-        self._previous_hotkey =
-            register_previous_candidates(&self.manager, &mut self.registry, updates);
+        self._previous_hotkey = register_previous_candidates(manager, &mut self.registry, updates);
     }
 }
