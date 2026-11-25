@@ -8,6 +8,7 @@ if [[ ! -x "$appimage" ]]; then
   echo "AppImage is missing or not executable: $appimage" >&2
   exit 1
 fi
+appimage=$(realpath -- "$appimage")
 
 xvfb-run --auto-servernum \
   --server-args="-screen 0 1024x768x24 +extension GLX +render -noreset" \
