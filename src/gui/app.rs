@@ -18,8 +18,8 @@ pub(crate) fn run() -> eframe::Result<()> {
         .into_rgba8();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([820.0, 440.0])
-            .with_min_inner_size([640.0, 340.0])
+            .with_inner_size([520.0, 440.0])
+            .with_min_inner_size([520.0, 220.0])
             .with_decorations(false)
             .with_transparent(true)
             .with_has_shadow(false)
@@ -202,6 +202,7 @@ struct WindowListApp {
     overlay_tx: mpsc::Sender<OcrOverlayEvent>,
     overlay_rx: mpsc::Receiver<OcrOverlayEvent>,
     ocr_calibration: Option<OcrCalibration>,
+    last_auto_sized_window_count: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -315,6 +316,7 @@ impl WindowListApp {
             overlay_tx,
             overlay_rx,
             ocr_calibration: None,
+            last_auto_sized_window_count: None,
         }
     }
 
@@ -808,6 +810,8 @@ impl eframe::App for WindowListApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.receive_worker_events();
         self.receive_overlay_events();
+        let window_count = self.state.windows.len();
+        let mut content_height = 0.0;
         let available = ui.available_size();
         let inner_size = egui::vec2((available.x - 2.0).max(0.0), (available.y - 2.0).max(0.0));
 
@@ -881,11 +885,19 @@ impl eframe::App for WindowListApp {
                 });
 
                 egui::Frame::new()
-                    .outer_margin(egui::Margin::symmetric(12, 0))
+                    .outer_margin(egui::Margin {
+                        left: 12,
+                        right: 0,
+                        top: 0,
+                        bottom: 0,
+                    })
                     .show(ui, |ui| {
-                        egui::ScrollArea::vertical()
+                        let scroll_output = egui::ScrollArea::vertical()
                             .auto_shrink([false, false])
                             .show(ui, |ui| {
+                                // Keep a small gutter between cards and the window border
+                                // without moving the scrollbar away from the right edge.
+                                ui.set_max_width((ui.available_width() - 8.0).max(0.0));
                                 ui.add_space(4.0);
                                 ui.horizontal(|ui| {
                                     let (emblem_rect, _) = ui.allocate_exact_size(
@@ -1444,6 +1456,7 @@ impl eframe::App for WindowListApp {
                                     }
                                 }
                             });
+                        content_height = scroll_output.content_size.y;
                     });
 
                 let window_rect = ui.max_rect();
@@ -1478,6 +1491,26 @@ impl eframe::App for WindowListApp {
                 self.state.sync_character_profiles();
                 self.persist_config();
             });
+        if self.last_auto_sized_window_count != Some(window_count) {
+            self.last_auto_sized_window_count = Some(window_count);
+            let current_width = ui
+                .ctx()
+                .input(|input| input.viewport().inner_rect.map(|rect| rect.width()))
+                .unwrap_or(600.0);
+            let monitor_height = ui
+                .ctx()
+                .input(|input| input.viewport().monitor_size.map(|size| size.y))
+                .unwrap_or(900.0)
+                .max(260.0);
+            let desired_height = (content_height + 62.0)
+                .max(220.0)
+                .min(monitor_height - 40.0);
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                    current_width,
+                    desired_height,
+                )));
+        }
         if let Some(calibration) = self.ocr_calibration.clone() {
             let viewport_id = egui::ViewportId::from_hash_of("ocr-calibration-zone");
             let tx = self.overlay_tx.clone();
