@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use x11rb::protocol::xproto::Window;
 
@@ -23,6 +23,9 @@ pub(super) struct WindowListState {
     pub(super) errors: HashMap<crate::runtime::WorkerKind, String>,
     pub(super) restrict_prev_next_to_dofus: bool,
     pub(super) persisted_characters: Vec<crate::config::CharacterConfig>,
+    pub(super) saved_window_assignments: HashMap<u32, String>,
+    pub(super) initiative_order: Vec<String>,
+    pub(super) auto_order_restore_pending: bool,
     pub(super) association_window: Option<Window>,
     pub(super) association_query: String,
     pub(super) ocr_region: Option<crate::config::OcrRegion>,
@@ -50,6 +53,9 @@ impl Default for WindowListState {
             errors: HashMap::new(),
             restrict_prev_next_to_dofus: true,
             persisted_characters: Vec::new(),
+            saved_window_assignments: HashMap::new(),
+            initiative_order: Vec::new(),
+            auto_order_restore_pending: false,
             association_window: None,
             association_query: String::new(),
             ocr_region: None,
@@ -65,12 +71,57 @@ impl Default for WindowListState {
 impl WindowListState {
     pub(super) fn apply_windows(&mut self, windows: Vec<Window>, focused_window: Option<Window>) {
         self.detected_windows = windows;
+        let restored_names: Vec<_> = self
+            .detected_windows
+            .iter()
+            .filter_map(|window| self.saved_window_assignments.get(window))
+            .collect();
+        let auto_assignment_complete = !self.detected_windows.is_empty()
+            && self.detected_windows.len() == self.saved_window_assignments.len()
+            && self.detected_windows.iter().all(|window| {
+                self.saved_window_assignments
+                    .get(window)
+                    .is_some_and(|name| {
+                        self.initiative_order.contains(name)
+                            && self
+                                .persisted_characters
+                                .iter()
+                                .any(|character| character.name == *name)
+                    })
+            })
+            && restored_names
+                .iter()
+                .map(|name| name.to_lowercase())
+                .collect::<HashSet<_>>()
+                .len()
+                == restored_names.len();
         self.reconcile_order();
         self.focused_window = focused_window;
         self.character_names
             .retain(|window, _| self.detected_windows.contains(window));
+        self.saved_window_assignments
+            .retain(|window, _| self.detected_windows.contains(window));
         self.shortcut_keys
             .retain(|window, _| self.detected_windows.contains(window));
+        let restored_assignments: Vec<_> = self
+            .detected_windows
+            .iter()
+            .filter(|window| !self.character_names.contains_key(window))
+            .filter_map(|window| {
+                self.saved_window_assignments
+                    .get(window)
+                    .map(|name| (*window, name.clone()))
+            })
+            .collect();
+        for (window, name) in restored_assignments {
+            self.assign_character(window, name);
+        }
+        if self.auto_order_restore_pending {
+            self.auto_order_restore_pending = false;
+            if auto_assignment_complete {
+                self.sort_windows_by_initiative_order();
+            }
+        }
         if self
             .selected_window
             .is_some_and(|window| !self.detected_windows.contains(&window))
@@ -115,6 +166,7 @@ impl WindowListState {
             return;
         }
         self.windows.swap(index, target as usize);
+        self.update_initiative_order_from_windows();
     }
 
     pub(super) fn assign_shortcut(&mut self, window: Window, key: Option<String>) {
@@ -160,6 +212,24 @@ impl WindowListState {
         self.assign_character_profile(window, character);
     }
 
+    pub(super) fn delete_character(&mut self, name: &str) {
+        self.persisted_characters
+            .retain(|character| !character.name.eq_ignore_ascii_case(name));
+        let assigned_windows: Vec<_> = self
+            .character_names
+            .iter()
+            .filter_map(|(window, assigned)| assigned.eq_ignore_ascii_case(name).then_some(*window))
+            .collect();
+        for window in assigned_windows {
+            self.character_names.remove(&window);
+            self.shortcut_keys.remove(&window);
+        }
+        self.saved_window_assignments
+            .retain(|_, assigned| !assigned.eq_ignore_ascii_case(name));
+        self.initiative_order
+            .retain(|entry| !entry.eq_ignore_ascii_case(name));
+    }
+
     fn assign_character_profile(
         &mut self,
         window: Window,
@@ -173,26 +243,28 @@ impl WindowListState {
         }
         self.character_names.insert(window, character.name);
         self.assign_shortcut(window, character.shortcut);
-        self.sort_windows_by_saved_order();
     }
 
     pub(super) fn sync_character_profiles(&mut self) {
         let mut profiles = Vec::new();
+        let mut window_assignments = HashMap::new();
         for window in &self.windows {
             let Some(name) = self.character_names.get(window).map(|name| name.trim()) else {
                 continue;
             };
-            if name.is_empty()
-                || profiles
-                    .iter()
-                    .any(|entry: &crate::config::CharacterConfig| entry.name == name)
-            {
+            if name.is_empty() {
                 continue;
             }
-            profiles.push(crate::config::CharacterConfig {
-                name: name.to_owned(),
-                shortcut: self.shortcut_keys.get(window).cloned(),
-            });
+            window_assignments.insert(*window, name.to_owned());
+            if !profiles
+                .iter()
+                .any(|entry: &crate::config::CharacterConfig| entry.name == name)
+            {
+                profiles.push(crate::config::CharacterConfig {
+                    name: name.to_owned(),
+                    shortcut: self.shortcut_keys.get(window).cloned(),
+                });
+            }
         }
         for saved in &self.persisted_characters {
             if !saved.name.trim().is_empty()
@@ -202,13 +274,41 @@ impl WindowListState {
             }
         }
         self.persisted_characters = profiles;
+        // Before the first monitor snapshot, keep the assignments loaded from
+        // disk; the first snapshot will prune closed windows.
+        if !self.detected_windows.is_empty() {
+            self.saved_window_assignments = window_assignments;
+        }
     }
 
-    fn sort_windows_by_saved_order(&mut self) {
-        let order = &self.persisted_characters;
+    pub(super) fn update_initiative_order_from_windows(&mut self) {
+        let mut order = Vec::new();
+        for window in &self.windows {
+            let Some(name) = self
+                .character_names
+                .get(window)
+                .map(|name| name.trim())
+                .filter(|name| !name.is_empty())
+            else {
+                continue;
+            };
+            if !order.iter().any(|entry: &String| entry == name) {
+                order.push(name.to_owned());
+            }
+        }
+        for name in &self.initiative_order {
+            if !order.iter().any(|entry| entry == name) {
+                order.push(name.clone());
+            }
+        }
+        self.initiative_order = order;
+    }
+
+    fn sort_windows_by_initiative_order(&mut self) {
+        let order = &self.initiative_order;
         self.windows.sort_by_key(|window| {
             let name = self.character_names.get(window);
-            name.and_then(|name| order.iter().position(|entry| entry.name == *name))
+            name.and_then(|name| order.iter().position(|entry| entry == name))
                 .unwrap_or(usize::MAX)
         });
     }
@@ -242,6 +342,9 @@ mod tests {
             errors: HashMap::new(),
             restrict_prev_next_to_dofus: true,
             persisted_characters: Vec::new(),
+            saved_window_assignments: HashMap::new(),
+            initiative_order: Vec::new(),
+            auto_order_restore_pending: false,
             detected_windows: vec![1, 2],
         };
         state.apply_windows(vec![1, 3], Some(3));
@@ -271,6 +374,9 @@ mod tests {
             errors: HashMap::new(),
             restrict_prev_next_to_dofus: true,
             persisted_characters: Vec::new(),
+            saved_window_assignments: HashMap::new(),
+            initiative_order: Vec::new(),
+            auto_order_restore_pending: false,
             detected_windows: vec![1, 2],
         };
         state.apply_windows(vec![2, 1], Some(1));
@@ -298,6 +404,9 @@ mod tests {
             character_names: HashMap::new(),
             restrict_prev_next_to_dofus: true,
             persisted_characters: Vec::new(),
+            saved_window_assignments: HashMap::new(),
+            initiative_order: Vec::new(),
+            auto_order_restore_pending: false,
             detected_windows: Vec::new(),
         };
 

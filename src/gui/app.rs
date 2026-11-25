@@ -267,6 +267,12 @@ impl WindowListApp {
             }
             state.restrict_prev_next_to_dofus = config.restrict_prev_next_to_dofus;
             state.ocr_region = config.ocr_region;
+            state.saved_window_assignments = config
+                .window_assignments
+                .into_iter()
+                .map(|assignment| (assignment.window, assignment.character))
+                .collect();
+            let configured_initiative_order = config.initiative_order;
             // The old config stored characters in discovery order and initiative
             // separately. Reorder that roster once, then use names as identities.
             let mut characters = config.characters;
@@ -285,6 +291,16 @@ impl WindowListApp {
                 }
             }
             state.persisted_characters = discard_incremental_name_fragments(ordered_characters);
+            state.initiative_order = if configured_initiative_order.is_empty() {
+                state
+                    .persisted_characters
+                    .iter()
+                    .map(|character| character.name.clone())
+                    .collect()
+            } else {
+                configured_initiative_order
+            };
+            state.auto_order_restore_pending = !state.saved_window_assignments.is_empty();
 
             if let Some(hotkey) = state.next_key.clone() {
                 let _ = commands_tx.send(super::worker::WindowCommand::AssignGlobal {
@@ -611,9 +627,19 @@ impl WindowListApp {
 
     fn persist_config(&self) {
         let config = crate::config::PersistedConfig {
-            version: 4,
+            version: 6,
             characters: self.state.persisted_characters.clone(),
             ocr_region: self.state.ocr_region,
+            window_assignments: self
+                .state
+                .saved_window_assignments
+                .iter()
+                .map(|(window, character)| crate::config::WindowAssignment {
+                    window: *window,
+                    character: character.clone(),
+                })
+                .collect(),
+            initiative_order: self.state.initiative_order.clone(),
             window_order: Vec::new(),
             next_key: self.state.next_key.clone(),
             previous_key: self.state.previous_key.clone(),
@@ -1080,13 +1106,11 @@ impl eframe::App for WindowListApp {
                                                         .color(egui::Color32::from_rgb(202, 167, 104)),
                                                 );
                                                 let status = if let Some(window) = self.state.ocr_target {
-                                                    format!("Détecté : {}", self.state.character_label(window))
-                                                } else if !self.state.ocr_text.trim().is_empty() {
-                                                    format!("Texte lu : {}", self.state.ocr_text.trim())
+                                                    format!("Personnage détecté : {}", self.state.character_label(window))
                                                 } else if self.state.ocr_region.is_some() {
-                                                    "Zone active · attente du nom de tour".to_owned()
+                                                    "En attente d’un début de tour…".to_owned()
                                                 } else {
-                                                    "Place la zone sur la vignette du début de tour.".to_owned()
+                                                    "Zone inactive · place-la sur la vignette du début de tour.".to_owned()
                                                 };
                                                 ui.label(
                                                     egui::RichText::new(status)
@@ -1218,6 +1242,7 @@ impl eframe::App for WindowListApp {
                                     if let Some(window) = self.state.association_window {
                                         let mut selected_character = None;
                                         let mut create_name = None;
+                                        let mut delete_character = None;
                                         egui::Frame::new()
                                             .fill(egui::Color32::from_rgb(34, 29, 40))
                                             .stroke(egui::Stroke::new(
@@ -1261,7 +1286,7 @@ impl eframe::App for WindowListApp {
                                                 });
                                                 ui.label(
                                                     egui::RichText::new(
-                                                        "Choisis un personnage enregistré ou crée un nouveau nom.",
+                                                        "Choisis un nom enregistré, ou fais un clic droit dessus pour le supprimer.",
                                                     )
                                                     .size(10.0)
                                                     .color(egui::Color32::from_rgb(166, 157, 174)),
@@ -1294,9 +1319,16 @@ impl eframe::App for WindowListApp {
                                                         .show(ui, |ui| {
                                                             ui.horizontal_wrapped(|ui| {
                                                                 for character in matches {
-                                                                    if ui.button(&character.name).clicked() {
+                                                                    let response = ui.button(&character.name);
+                                                                    if response.clicked() {
                                                                         selected_character = Some(character.name.clone());
                                                                     }
+                                                                    response.context_menu(|ui| {
+                                                                        if ui.button("Supprimer").clicked() {
+                                                                            delete_character = Some(character.name.clone());
+                                                                            ui.close();
+                                                                        }
+                                                                    });
                                                                 }
                                                             });
                                                         });
@@ -1316,12 +1348,18 @@ impl eframe::App for WindowListApp {
 
                                         if let Some(name) = selected_character {
                                             self.state.assign_character(window, name);
+                                            self.state.update_initiative_order_from_windows();
                                             self.state.association_window = None;
                                             self.state.association_query.clear();
                                             self.refresh_window_assignments();
                                         } else if let Some(name) = create_name {
                                             self.state.create_character(window, name);
+                                            self.state.update_initiative_order_from_windows();
                                             self.state.association_window = None;
+                                            self.state.association_query.clear();
+                                            self.refresh_window_assignments();
+                                        } else if let Some(name) = delete_character {
+                                            self.state.delete_character(&name);
                                             self.state.association_query.clear();
                                             self.refresh_window_assignments();
                                         }
@@ -1391,20 +1429,24 @@ impl eframe::App for WindowListApp {
                                                         .filter(|name| !name.trim().is_empty())
                                                         .map(String::as_str)
                                                         .unwrap_or("Aucun personnage lié");
-                                                    ui.add(
+                                                    ui.add_sized(
+                                                        [100.0, 24.0],
                                                         egui::Label::new(egui::RichText::new(character_name)
                                                             .color(if character_name == "Aucun personnage lié" {
                                                                 egui::Color32::from_rgb(153, 145, 161)
                                                             } else {
                                                                 egui::Color32::from_rgb(239, 231, 216)
                                                             }))
-                                                        .truncate(),
-                                                    );
-                                                    if ui.button(if character_name == "Aucun personnage lié" {
-                                                        "Associer…"
-                                                    } else {
-                                                        "Changer"
-                                                    }).clicked() {
+                                                            .truncate(),
+                                                    ).on_hover_text(character_name);
+                                                    if ui.add_sized(
+                                                        [78.0, 28.0],
+                                                        egui::Button::new(if character_name == "Aucun personnage lié" {
+                                                            "Associer…"
+                                                        } else {
+                                                            "Changer"
+                                                        }),
+                                                    ).clicked() {
                                                         self.state.association_window = Some(window);
                                                         self.state.association_query.clear();
                                                         self.state.selected_window = Some(window);
@@ -1412,7 +1454,7 @@ impl eframe::App for WindowListApp {
 
                                                     if self.state.capture_window == Some(window) {
                                                         if ui
-                                                            .button("Appuyez sur une touche…")
+                                                            .add_sized([86.0, 28.0], egui::Button::new("Touche…"))
                                                             .clicked()
                                                         {
                                                             self.state.capture_window = None;
@@ -1426,7 +1468,7 @@ impl eframe::App for WindowListApp {
                                                             .unwrap_or_else(|| {
                                                                 "Raccourci".to_owned()
                                                             });
-                                                        if ui.button(button_label).clicked() {
+                                                        if ui.add_sized([86.0, 28.0], egui::Button::new(button_label)).clicked() {
                                                             self.state.capture_window =
                                                                 Some(window);
                                                         }
@@ -1502,7 +1544,7 @@ impl eframe::App for WindowListApp {
                 .input(|input| input.viewport().monitor_size.map(|size| size.y))
                 .unwrap_or(900.0)
                 .max(260.0);
-            let desired_height = (content_height + 62.0)
+            let desired_height = (content_height + 262.0)
                 .max(220.0)
                 .min(monitor_height - 40.0);
             ui.ctx()

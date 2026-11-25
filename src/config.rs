@@ -13,6 +13,10 @@ pub(crate) struct PersistedConfig {
     pub(crate) characters: Vec<CharacterConfig>,
     #[serde(default)]
     pub(crate) ocr_region: Option<OcrRegion>,
+    #[serde(default)]
+    pub(crate) window_assignments: Vec<WindowAssignment>,
+    #[serde(default)]
+    pub(crate) initiative_order: Vec<String>,
     /// Legacy order as indices into the old discovery list (version 2 configs).
     #[serde(default)]
     pub(crate) window_order: Vec<usize>,
@@ -41,8 +45,15 @@ pub(crate) struct CharacterConfig {
     pub(crate) shortcut: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct WindowAssignment {
+    /// X11 window ID, stable while the Dofus window remains open.
+    pub(crate) window: u32,
+    pub(crate) character: String,
+}
+
 fn default_version() -> u32 {
-    4
+    6
 }
 
 fn config_path() -> Result<PathBuf> {
