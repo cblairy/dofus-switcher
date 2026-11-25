@@ -1,6 +1,5 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use ocrs::{OcrEngine, OcrEngineParams};
-use rten::Model;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::Duration;
 use x11rb::errors::ReplyError;
@@ -11,6 +10,7 @@ use crate::runtime::{WorkerEvent, WorkerKind};
 use crate::window;
 
 mod capture;
+mod models;
 mod preprocess;
 mod ximage;
 
@@ -143,22 +143,7 @@ fn is_window_closed_error(err: &anyhow::Error) -> bool {
 }
 
 fn init_engine() -> Result<OcrEngine> {
-    let cache_dir = dirs::cache_dir()
-        .context("Dossier de cache introuvable")?
-        .join("ocrs");
-    let detection_path = cache_dir.join("text-detection.onnx");
-    let recognition_path = cache_dir.join("text-recognition.onnx");
-    if !detection_path.is_file() || !recognition_path.is_file() {
-        bail!(
-            "Modèles OCR absents. Télécharge text-detection.onnx et text-recognition.onnx depuis https://github.com/robertknight/ocrs-models puis place-les dans {}.",
-            cache_dir.display()
-        );
-    }
-
-    let detection_model = Model::load_file(&detection_path)
-        .context("Chargement du modèle de détection impossible")?;
-    let recognition_model = Model::load_file(&recognition_path)
-        .context("Chargement du modèle de lecture impossible")?;
+    let (detection_model, recognition_model) = models::load_pair()?;
 
     OcrEngine::new(OcrEngineParams {
         detection_model: Some(detection_model),

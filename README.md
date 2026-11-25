@@ -39,6 +39,20 @@ cargo build --release
 Puis lance l’application avec `cargo run --release` ou
 `target/release/dofus-switcher`.
 
+## Paquet AppImage
+
+Les versions publiées fournissent un AppImage x86_64 construit sur Ubuntu 22.04.
+Il embarque les bibliothèques X11 utilisées par l’application ainsi que les
+modèles OCR vérifiés ; aucune installation de Rust ni téléchargement des
+modèles n’est nécessaire. Le paquet conserve les mentions de licence des
+modèles dans son dossier de ressources.
+
+L’hôte fournit toujours le noyau, glibc, le serveur graphique X11/XWayland et
+le pilote OpenGL. Sous Wayland, Dofus doit donc être visible via XWayland. Les
+raccourcis globaux demandent aussi un accès utilisateur à `/dev/input`; si cet
+accès manque, l’application démarre tout de même et la détection ainsi que les
+commandes à la souris restent disponibles.
+
 ## Première utilisation
 
 1. Lance Dofus. Ses fenêtres apparaissent dans la liste de comptes.
@@ -61,14 +75,16 @@ illustré et les infobulles expliquent les contrôles.
 
 ## Modèles OCR
 
-Au premier démarrage du moteur OCR, place ces deux modèles dans le dossier de
-cache `ocrs` de l’utilisateur (`~/.cache/ocrs/` par défaut, ou
-`$XDG_CACHE_HOME/ocrs/`) :
+L’AppImage publié inclut ces modèles. Pour une compilation depuis les sources,
+place-les dans le dossier de cache `ocrs` de l’utilisateur
+(`~/.cache/ocrs/` par défaut, ou `$XDG_CACHE_HOME/ocrs/`) :
 
 - `text-detection.onnx`
 - `text-recognition.onnx`
 
 Ils sont disponibles dans le dépôt [ocrs-models](https://github.com/robertknight/ocrs-models).
+Leur attribution et leur licence CC BY-SA 4.0 sont indiquées dans
+[`assets/models/ATTRIBUTION.md`](assets/models/ATTRIBUTION.md).
 
 ## Configuration
 

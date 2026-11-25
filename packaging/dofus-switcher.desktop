@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Dofus Switcher
+Comment=Gestion et changement rapide des fenêtres Dofus
+Exec=dofus-switcher
+Icon=dofus-switcher
+Categories=Game;Utility;
+Terminal=false

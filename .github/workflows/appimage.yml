@@ -1,0 +1,90 @@
+name: Linux AppImage
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  appimage:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build and desktop libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libgl1-mesa-dev libx11-dev libxcb1-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxi-dev libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libssl-dev libx11-6 libxi6 libxcursor1 \
+            libxrandr2 libxinerama1 libxxf86vm1 libxkbcommon0 \
+            libxkbcommon-x11-0 libxcb-render0 libxcb-shape0 libxcb-xfixes0 libfuse2
+
+      - uses: dtolnay/rust-toolchain@1.95.0
+
+      - name: Build release executable
+        run: cargo build --locked --release
+
+      - name: Prepare AppDir and pinned OCR models
+        id: package
+        run: |
+          version=$(cargo metadata --locked --no-deps --format-version 1 | \
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          mkdir -p AppDir/usr/share/dofus-switcher/models
+          bash scripts/fetch-ocr-models.sh AppDir/usr/share/dofus-switcher/models
+          cp assets/models/ATTRIBUTION.md AppDir/usr/share/dofus-switcher/models/
+
+      - name: Download linuxdeploy
+        run: |
+          curl --fail --location --silent --show-error \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage \
+            --output linuxdeploy.AppImage
+          chmod +x linuxdeploy.AppImage
+
+      - name: Bundle shared libraries and build AppImage
+        env:
+          ARCH: x86_64
+          LDAI_OUTPUT: Dofus-Switcher-${{ steps.package.outputs.version }}-x86_64.AppImage
+        run: |
+          ./linuxdeploy.AppImage --appimage-extract-and-run \
+            --appdir AppDir \
+            --executable target/release/dofus-switcher \
+            --desktop-file packaging/dofus-switcher.desktop \
+            --icon-file assets/icons/dofus-switcher.png \
+            --library /usr/lib/x86_64-linux-gnu/libX11.so.6 \
+            --library /usr/lib/x86_64-linux-gnu/libXcursor.so.1 \
+            --library /usr/lib/x86_64-linux-gnu/libXi.so.6 \
+            --library /usr/lib/x86_64-linux-gnu/libXrandr.so.2 \
+            --library /usr/lib/x86_64-linux-gnu/libXinerama.so.1 \
+            --library /usr/lib/x86_64-linux-gnu/libXxf86vm.so.1 \
+            --library /usr/lib/x86_64-linux-gnu/libxkbcommon.so.0 \
+            --library /usr/lib/x86_64-linux-gnu/libxkbcommon-x11.so.0 \
+            --library /usr/lib/x86_64-linux-gnu/libxcb-render.so.0 \
+            --library /usr/lib/x86_64-linux-gnu/libxcb-shape.so.0 \
+            --library /usr/lib/x86_64-linux-gnu/libxcb-xfixes.so.0 \
+            --output appimage
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dofus-Switcher-${{ steps.package.outputs.version }}-x86_64-AppImage
+          path: Dofus-Switcher-${{ steps.package.outputs.version }}-x86_64.AppImage
+          if-no-files-found: error
+
+      - name: Attach AppImage to GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          appimage="Dofus-Switcher-${{ steps.package.outputs.version }}-x86_64.AppImage"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$appimage" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$appimage" --generate-notes
+          fi
