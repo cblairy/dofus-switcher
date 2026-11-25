@@ -10,9 +10,14 @@ use crate::gui::worker::WorkerHandle;
 
 use super::WindowListApp;
 use super::config_io::discard_incremental_name_fragments;
+use super::help_images::HelpImages;
 
 impl WindowListApp {
-    pub(super) fn new(worker: WorkerHandle, app_icon: egui::TextureHandle) -> Self {
+    pub(super) fn new(
+        worker: WorkerHandle,
+        app_icon: egui::TextureHandle,
+        help_images: HelpImages,
+    ) -> Self {
         let commands_tx = worker.commands_tx();
         let (capture_tx, capture_rx) = mpsc::channel();
         let (overlay_tx, overlay_rx) = mpsc::channel();
@@ -104,6 +109,7 @@ impl WindowListApp {
         let mut app = Self {
             worker,
             app_icon,
+            help_images,
             commands_tx,
             capture_rx,
             state,
@@ -113,6 +119,7 @@ impl WindowListApp {
             ocr_calibration: None,
             last_auto_sized_window_count: None,
             last_saved_config: None,
+            help_open: false,
         };
         app.state.sync_character_profiles();
         app.last_saved_config = Some(app.persisted_config());

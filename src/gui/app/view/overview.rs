@@ -2,7 +2,7 @@ use eframe::egui;
 
 use crate::gui::app::WindowListApp;
 
-pub(super) fn show(app: &WindowListApp, ui: &mut egui::Ui) {
+pub(super) fn show(app: &mut WindowListApp, ui: &mut egui::Ui) {
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         draw_emblem(ui);
@@ -50,7 +50,13 @@ fn draw_emblem(ui: &mut egui::Ui) {
     ));
 }
 
-fn draw_account_count(app: &WindowListApp, ui: &mut egui::Ui) {
+fn draw_account_count(app: &mut WindowListApp, ui: &mut egui::Ui) {
+    let help = ui
+        .add_sized([28.0, 28.0], egui::Button::new("?"))
+        .on_hover_text("Guide rapide : comptes, ordre, raccourcis et OCR");
+    if help.clicked() {
+        app.help_open = true;
+    }
     let count = app.state.windows.len();
     let label = if count == 1 {
         "1 COMPTE".to_owned()

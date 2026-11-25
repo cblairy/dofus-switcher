@@ -45,7 +45,12 @@ fn draw_status(app: &WindowListApp, ui: &mut egui::Ui) {
 
 fn draw_controls(app: &mut WindowListApp, ui: &mut egui::Ui) {
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if app.state.ocr_region.is_some() && ui.button("Désactiver").clicked() {
+        if app.state.ocr_region.is_some()
+            && ui
+                .button("Désactiver")
+                .on_hover_text("Mettre en pause la lecture OCR.")
+                .clicked()
+        {
             app.state.ocr_region = None;
             app.state.ocr_text.clear();
             app.state.ocr_target = None;
@@ -59,7 +64,12 @@ fn draw_controls(app: &mut WindowListApp, ui: &mut egui::Ui) {
         } else {
             "Placer la zone"
         };
-        if ui.button(action).clicked() && app.begin_ocr_calibration(ui.ctx()) {
+        let hint = if app.state.ocr_region.is_some() {
+            "Repositionner ou redimensionner la zone OCR sur la vignette de début de tour."
+        } else {
+            "Choisir une fenêtre Dofus puis placer la zone OCR sur la vignette de début de tour."
+        };
+        if ui.button(action).on_hover_text(hint).clicked() && app.begin_ocr_calibration(ui.ctx()) {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
         }
@@ -70,7 +80,10 @@ fn draw_controls(app: &mut WindowListApp, ui: &mut egui::Ui) {
 }
 
 fn switch_to_detected_window(app: &mut WindowListApp, ui: &mut egui::Ui, window: u32) {
-    if ui.button("Basculer").clicked()
+    if ui
+        .button("Basculer")
+        .on_hover_text("Activer la fenêtre du personnage détecté.")
+        .clicked()
         && app
             .commands_tx
             .send(WindowCommand::Activate(window))

@@ -3,6 +3,7 @@ mod account_row;
 mod alerts;
 mod association;
 mod global_shortcuts;
+mod help;
 mod ocr_status;
 mod overview;
 mod resize_grip;
@@ -25,6 +26,7 @@ impl eframe::App for WindowListApp {
         self.receive_overlay_events();
         let count = self.state.windows.len();
         let content_height = draw_main_window(self, ui);
+        help::show(self, ui.ctx());
         resize_after_account_change(self, ui, count, content_height);
         show_calibration_viewport(self, ui);
         request_repaint_when_visible(ui);

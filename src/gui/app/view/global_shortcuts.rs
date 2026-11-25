@@ -40,7 +40,11 @@ fn draw_label(ui: &mut egui::Ui) {
 
 fn draw_shortcut(app: &mut WindowListApp, ui: &mut egui::Ui, action: GlobalAction) {
     if app.state.capture_global == Some(action) {
-        if ui.button("Appuyez sur une touche…").clicked() {
+        if ui
+            .button("Appuyez sur une touche…")
+            .on_hover_text("Appuie sur la touche souhaitée, ou clique ici pour annuler.")
+            .clicked()
+        {
             app.state.capture_global = None;
         }
         return;
@@ -52,7 +56,11 @@ fn draw_shortcut(app: &mut WindowListApp, ui: &mut egui::Ui, action: GlobalActio
         ),
         GlobalAction::Next => ("Suivant", app.state.next_key.as_deref().unwrap_or("—")),
     };
-    if ui.button(format!("{label}   {key}")).clicked() {
+    if ui
+        .button(format!("{label}   {key}"))
+        .on_hover_text("Clique puis appuie sur une touche pour changer ce raccourci.")
+        .clicked()
+    {
         app.state.capture_global = Some(action);
     }
 }

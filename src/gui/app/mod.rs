@@ -1,5 +1,6 @@
 mod calibration;
 mod config_io;
+mod help_images;
 mod initialization;
 mod launch;
 mod overlay_geometry;
@@ -23,6 +24,7 @@ use super::worker::WorkerHandle;
 pub(super) struct WindowListApp {
     worker: WorkerHandle,
     app_icon: egui::TextureHandle,
+    help_images: help_images::HelpImages,
     commands_tx: mpsc::Sender<super::worker::WindowCommand>,
     capture_rx: mpsc::Receiver<Hotkey>,
     state: WindowListState,
@@ -32,6 +34,7 @@ pub(super) struct WindowListApp {
     ocr_calibration: Option<OcrCalibration>,
     last_auto_sized_window_count: Option<usize>,
     last_saved_config: Option<crate::config::PersistedConfig>,
+    help_open: bool,
 }
 
 #[derive(Clone)]

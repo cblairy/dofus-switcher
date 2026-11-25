@@ -51,7 +51,12 @@ pub(crate) fn run() -> eframe::Result<()> {
                 ),
                 egui::TextureOptions::LINEAR,
             );
-            Ok(Box::new(WindowListApp::new(worker, icon_texture)))
+            let help_images = super::help_images::HelpImages::load(&creation_context.egui_ctx);
+            Ok(Box::new(WindowListApp::new(
+                worker,
+                icon_texture,
+                help_images,
+            )))
         }),
     )
 }
@@ -112,6 +117,11 @@ pub(super) fn arrow_button(ui: &mut egui::Ui, up: bool, enabled: bool) -> bool {
             ))
             .min_size(egui::vec2(24.0, 24.0)),
         )
+        .on_hover_text(if up {
+            "Monter ce compte dans l’ordre de tour."
+        } else {
+            "Descendre ce compte dans l’ordre de tour."
+        })
     });
     response.inner.clicked()
 }

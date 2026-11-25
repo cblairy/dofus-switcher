@@ -86,6 +86,7 @@ fn show_actions(app: &mut WindowListApp, ui: &mut egui::Ui, index: usize, window
     let label = if assigned { "Changer" } else { "Associer…" };
     if ui
         .add_sized([78.0, 28.0], egui::Button::new(label))
+        .on_hover_text("Associer cette fenêtre à un personnage ou changer son association.")
         .clicked()
     {
         app.state.association_window = Some(window);
@@ -119,6 +120,9 @@ fn show_shortcut_button(app: &mut WindowListApp, ui: &mut egui::Ui, window: u32)
         .unwrap_or_else(|| "Raccourci".to_owned());
     if ui
         .add_sized([86.0, 28.0], egui::Button::new(label))
+        .on_hover_text(
+            "Clique puis appuie sur une touche pour basculer directement vers ce compte.",
+        )
         .clicked()
     {
         app.state.capture_window = Some(window);
