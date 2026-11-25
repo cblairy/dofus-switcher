@@ -24,6 +24,7 @@ jobs:
             libxcb-xfixes0-dev libssl-dev libx11-6 libxi6 libxcursor1 \
             libxrandr2 libxinerama1 libxxf86vm1 libxkbcommon0 \
             libxkbcommon-x11-0 libxcb-render0 libxcb-shape0 libxcb-xfixes0 libfuse2
+          sudo apt-get install -y xvfb xdotool libgl1-mesa-dri
 
       - uses: dtolnay/rust-toolchain@1.95.0
 
@@ -69,6 +70,12 @@ jobs:
             --library /usr/lib/x86_64-linux-gnu/libxcb-shape.so.0 \
             --library /usr/lib/x86_64-linux-gnu/libxcb-xfixes.so.0 \
             --output appimage
+
+      - name: Smoke test AppImage under Xvfb
+        run: |
+          bash scripts/smoke-test-appimage.sh \
+            "Dofus-Switcher-${{ steps.package.outputs.version }}-x86_64.AppImage" \
+            "$RUNNER_TEMP/dofus-switcher-smoke.log"
 
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
